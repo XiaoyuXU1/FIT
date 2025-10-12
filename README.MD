@@ -43,7 +43,6 @@ Use the following command to reproduce experimental results:
 python main.py \
   --topk_for_forget 8 \
   --similarity_threshold 0.90 \
-  --rare_token_fraction 0.1 \
   --epsilon 0.2 \
   --device "cuda:0"
 ```
@@ -57,4 +56,5 @@ Run the provided notebook:
 ```bash
 FQ_RU_cal.ipynb
 ```
+
 
