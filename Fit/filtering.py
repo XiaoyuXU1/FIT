@@ -150,46 +150,6 @@ class Unlearn_request_memory:
 
         return out
 
-
-# ======= 2. Data_filtering =======
-def get_rare_tokens(all_data, tokenizer, rare_token_fraction=0.05):
-    """
-    Count token frequencies across all texts and return the least frequent tokens.
-
-    Args:
-        all_data (str or list[str]): Input text or list of texts
-        tokenizer: Tokenizer object (must have .tokenize() method)
-        rare_token_fraction (float): Fraction of tokens considered rare (0~1)
-
-    Returns:
-        set: Set of rare tokens
-    """
-    # 1. Ensure all_data is a list
-    if isinstance(all_data, str):
-        all_data = [all_data]
-
-    # 2. Count token frequency
-    freq_dict = {}
-    for text in all_data:
-        tokens = tokenizer.tokenize(text)
-        for tok in tokens:
-            freq_dict[tok] = freq_dict.get(tok, 0) + 1
-
-    if not freq_dict:
-        return set()
-
-    # 3. Sort by frequency (ascending)
-    sorted_tokens = sorted(freq_dict.items(), key=lambda x: x[1])
-    total_tokens = len(sorted_tokens)
-
-    # 4. Determine cutoff count (at least 1 token)
-    cutoff = max(1, int(total_tokens * rare_token_fraction))
-    rare_part = sorted_tokens[:cutoff]
-
-    # 5. Return set of rare tokens
-    return {token for token, _ in rare_part}
-
-
 class Data_filtering:
     """
     Data filtering utility, used to clean/preprocess data before unlearning.
@@ -203,7 +163,6 @@ class Data_filtering:
     def __init__(
         self,
         simcse_model_name: str = "princeton-nlp/sup-simcse-bert-base-uncased",
-        rare_tokens: set = None,
         similarity_threshold: float = 0.95,
         chunk_size: int = 128,
         device: str = "cuda",
@@ -218,7 +177,6 @@ class Data_filtering:
             similarity_threshold: Semantic similarity threshold (cosine sim); above is considered duplicate
             chunk_size: Maximum length of each text chunk
             device: 'cuda' or 'cpu'
-            rare_token_fraction: Fraction of tokens considered rare
             epsilon: Loss difference threshold before/after deletion
             language_model: Causal LM (e.g. GPT2, LLaMA) for cross-entropy computation
             language_tokenizer: Corresponding tokenizer
@@ -239,7 +197,6 @@ class Data_filtering:
         if self.language_model is not None:
             self.language_model.to(self.device)
             self.language_model.eval()
-        self.rare_tokens = rare_tokens
 
     def _chunk_text(self, text: str) -> List[str]:
         """
@@ -282,13 +239,6 @@ class Data_filtering:
             embedding = outputs.pooler_output  # [batch_size, hidden_dim]
 
         return embedding  # shape: [1, hidden_dim]
-
-    def _contains_rare_token(self, chunk: str, rare_tokens: set) -> bool:
-        """
-        Check if the chunk contains at least one rare token.
-        """
-        tokens = self.language_tokenizer.tokenize(chunk)
-        return any(t in rare_tokens for t in tokens)
 
     def _compute_text_loss(self, text: str) -> float:
         """
@@ -351,7 +301,6 @@ class Data_filtering:
 
         # ====== 2) Split new_data into chunks ======
         new_chunks = self._chunk_text(new_data)
-        print(f"[Data_filtering] Found {len(self.rare_tokens)} rare tokens.")
 
         kept_chunks = []
         delete_chunks=[]
@@ -371,10 +320,6 @@ class Data_filtering:
             if max_score < self.similarity_threshold:
                 kept_chunks.append(chunk)
                 continue
-
-            # (c) If similarity >= threshold, check rare tokens + loss difference
-            if self._contains_rare_token(chunk, self.rare_tokens):
-                kept_chunks.append(chunk)
             else:
                 text_if_kept = "".join(new_chunks)
                 L_kept = self._compute_text_loss(text_if_kept)
@@ -403,3 +348,4 @@ class Data_filtering:
             return filtered_data, delete_data,filtered_data_embedding
         else:
             return filtered_data, "",filtered_data_embedding
+
