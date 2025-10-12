@@ -23,7 +23,7 @@ from typing import List, Dict, Any, Optional, Callable, Union
 import time
 from cycler import cycler
 from Fit.algorithm import FineTuning
-from Fit.filtering import Unlearn_request_memory, Data_filtering,get_rare_tokens
+from Fit.filtering import Unlearn_request_memory, Data_filtering
 from Fit.layer import LayerAttributionSelector
 
 TensorLike = Union[torch.Tensor, List[torch.Tensor]]
@@ -149,13 +149,11 @@ class UnlearningPipeline:
                  similarity_threshold: float = 0.95,
                  Data_filtering_chunk_size: int = 128,
                  device="cuda",
-                 rare_token_fraction: float = 0.05,
                  epsilon: float = 0.1
                  ):
         self.delete_data_list=[]
         self.all_chosen_layers_list=[]
         self.device = device
-        self.rare_token_fraction = rare_token_fraction
         self.epsilon = epsilon
         self.forget_list=forget_data
         # 2) Load Target Model (actually perform unlearning operation) and infer model
@@ -179,10 +177,8 @@ class UnlearningPipeline:
         # Initialize other submodules
         self.request_memory = Unlearn_request_memory()
         num_layers = len(self.target_model.model.layers)
-        self.rare_tokens=get_rare_tokens(all_forget_retain_data, self.target_tokenizer, self.rare_token_fraction)
         self.data_filtering = Data_filtering(
                                             simcse_model_name = "princeton-nlp/sup-simcse-bert-base-uncased",
-                                            rare_tokens=self.rare_tokens,
                                             similarity_threshold= similarity_threshold,
                                             chunk_size = Data_filtering_chunk_size,
                                             device = self.device,
@@ -252,8 +248,6 @@ def parse_args():
                         help="Number of top-k layers to select for forgetting")
     parser.add_argument("--similarity_threshold", type=float, default=0.90,
                         help="Similarity threshold for Data_filtering")
-    parser.add_argument("--rare_token_fraction", type=float, default=0.1,
-                        help="Fraction of rare tokens used in Data_filtering")
     parser.add_argument("--epsilon", type=float, default=0.2,
                         help="Epsilon threshold for Data_filtering")
     parser.add_argument("--device", type=str, default="cuda:0",
@@ -283,7 +277,6 @@ if __name__ == "__main__":
     args = parse_args()
     topk_for_forget = args.topk_for_forget # Number of topk layers to select
     similarity_threshold = args.similarity_threshold  # Similarity threshold for Data_filtering
-    rare_token_fraction = args.rare_token_fraction  # Rare token fraction for Data_filtering
     device = args.device  # Device to use for training
     epsilon = args.epsilon  # Epsilon for Data_filtering
     Unlearning_model_name=["Model/Finetune/Llama-2-7b-chat-hf","Model/Finetune/Meta-Llama-3-8B" ,"Model/Finetune/Meta-Llama-3-8B-Instruct" , "Model/Finetune/Yi-6B"]
@@ -304,7 +297,6 @@ if __name__ == "__main__":
                 similarity_threshold=similarity_threshold,
                 Data_filtering_chunk_size=Data_filtering_chunk_size,
                 device=device,  # Use "cuda" if GPU is available
-                rare_token_fraction=rare_token_fraction,
                 epsilon=epsilon
             )
             # Initiate unlearning request
@@ -374,3 +366,4 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
             # Clear PyTorch IPC cache
             torch.cuda.ipc_collect()
+
