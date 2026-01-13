@@ -1,6 +1,10 @@
 # FIT: Defying Catastrophic Forgetting in Continual LLM Unlearning
 
+<div align="center">
+
 [🌐 Website](https://xiaoyuxu1.github.io/Fit.github.io/)
+
+</div>
 
 ---
 
@@ -82,3 +86,4 @@ If you find FIT or the PCH benchmark useful, please cite:
   year={2026}
 }
 ```
+
