@@ -278,43 +278,6 @@ if __name__ == "__main__":
                 os.makedirs(model_save_path)
             model.save_pretrained(model_save_path)
             tokenizer.save_pretrained(model_save_path)
-            # Flatten the list of lists into a single list
-            # -------------------- Research-style plotting settings --------------------
-            plt.rcParams.update({
-                "font.family": "serif",
-                "font.serif": ["DejaVu Serif"],
-                "axes.labelsize": 20,
-                "axes.titlesize": 22,
-                "xtick.labelsize": 20,
-                "ytick.labelsize": 20,
-                "legend.fontsize": 20,
-                "figure.dpi": 150,
-                "axes.prop_cycle": cycler('color', [
-                    "#A6CEE3", "#FDBF6F", "#B2DF8A", "#FB9A99",
-                    "#CAB2D6", "#E8E817", "#CCEBC5", "#BE0C0C"
-                ])
-            })
-            # -------------------- Data processing --------------------
-            flat_layers = [layer for sublist in all_chosen_layers_list for layer in sublist]
-            layer_counts = Counter(flat_layers)
-            layers = sorted(layer_counts.keys())
-            counts = [layer_counts[l] for l in layers]
-
-            # -------------------- Draw histogram --------------------
-            plt.figure(figsize=(6, 4))
-            plt.bar(layers, counts, width=0.6)
-            plt.xlabel("Layer Index")
-            plt.ylabel("Frequency")
-            plt.title("Histogram of Chosen Layers")
-            plt.grid(axis="y", linestyle="--", alpha=0.7)
-            plt.tight_layout()
-
-            # -------------------- Save as PDF --------------------
-            save_path = f"Figures/layer/{Unlearning_model_file_name[j]}_layer_histogram.pdf"
-            plt.savefig(save_path, format="pdf", dpi=300, bbox_inches="tight")
-            plt.close()
-
-            print(f"Histogram saved to {save_path}")
             del model
             del tokenizer
             # Force garbage collection
@@ -324,6 +287,7 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
             # Clear PyTorch IPC cache
             torch.cuda.ipc_collect()
+
 
 
 
