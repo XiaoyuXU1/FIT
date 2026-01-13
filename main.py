@@ -219,8 +219,8 @@ def parse_args():
 # ====================== Test Example ======================
 if __name__ == "__main__":
     # Set random seed (ensure reproducibility)
-    PCH_file_path = 'XUJA231/PCH'  # Forget set
-    PCH_QA_path="XUJA231/PCH_QA"
+    PCH_file_path = 'FITPCH/PCH'  # Forget set
+    PCH_QA_path="FITPCH/PCH_QA"
     Pch=load_dataset(PCH_file_path)["train"]["text"]
     Pch_QA=load_dataset(PCH_QA_path)
     Pch_Q=Pch_QA['train']["question"]
@@ -287,6 +287,7 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
             # Clear PyTorch IPC cache
             torch.cuda.ipc_collect()
+
 
 
 
