@@ -10,13 +10,13 @@
 
 ## ✨ Overview
 
-This repository provides the official implementation of **FIT: Scalable and Continual Unlearning for Large Language Models**.
+This repository provides the official implementation of **FIT: Defying Catastrophic Forgetting in Continual LLM Unlearning**.
 
 We introduce **FIT**, a framework designed to address the challenges of unlearning in large language models (LLMs) through:
 
-- **🧹 Filtering**: rigorous data filtering to ensure high-quality forget sets  
+- **🧹 Filtering**: rigorous data filtering to reduce repeated forgetting  
 - **📌 Importance-aware updates**: adaptive strategies guided by sample importance  
-- **🎯 Targeted layer attribution**: precise identification of layers most responsible for memorization  
+- **🎯 Targeted layer attribution**: precise identification of layers most responsible for forget set  
 
 Together, these components enable effective forgetting without compromising model utility.
 
@@ -86,4 +86,5 @@ If you find FIT or the PCH benchmark useful, please cite:
   year={2026}
 }
 ```
+
 
