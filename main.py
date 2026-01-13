@@ -255,18 +255,12 @@ def parse_args():
 # ====================== Test Example ======================
 if __name__ == "__main__":
     # Set random seed (ensure reproducibility)
-    forget_file_path = 'Dataset/Forget_set/Forget_merged.json'  # Forget set
-    retain_file_path = 'Dataset/Retain_set/Retain_merged.json'  # Retain set
-    forget_QA_path="Dataset/Forget_set/Forget_QA.json"
-    retain_QA_path="Dataset/Retain_set/Retain_QA.json"
-    forget_list = read_json_as_list(forget_file_path)
-    retain_list= read_json_as_list(retain_file_path)
-    forget_QA_list = read_json_as_list(forget_QA_path)
-    retain_QA_list= read_json_as_list(retain_QA_path)
-    forget_question = [data['question'] for data in forget_QA_list]
-    forget_answer = [data['answer'] for data in forget_QA_list]
-    retain_question= [data['question'] for data in retain_QA_list]
-    retain_answer= [data['answer'] for data in retain_QA_list]
+    PCH_file_path = 'XUJA231/PCH'  # Forget set
+    PCH_QA_path="XUJA231/PCH_QA"
+    Pch=load_dataset(PCH_file_path)["train"]["text"]
+    Pch_QA=load_dataset(PCH_QA_path)
+    Pch_Q=Pch_QA['train']["question"]
+    Pch_A=Pch_QA['train']["answer"]
     # Parameter settings
     lr =3e-5   # Learning rate for fine-tuning
     epochs = 3  # Number of fine-tuning epochs
@@ -279,21 +273,21 @@ if __name__ == "__main__":
     similarity_threshold = args.similarity_threshold  # Similarity threshold for Data_filtering
     device = args.device  # Device to use for training
     epsilon = args.epsilon  # Epsilon for Data_filtering
-    Unlearning_model_name=["Model/Finetune/Llama-2-7b-chat-hf","Model/Finetune/Meta-Llama-3-8B" ,"Model/Finetune/Meta-Llama-3-8B-Instruct" , "Model/Finetune/Yi-6B"]
+    Unlearning_model_name=["XUJA231/Llama-2-7b-chat-hf_PCH_finetunef","XUJA231/Llama-3-8B_PCH_finetune" ,"XUJA231/Llama-3-8B-Instruct_PCH_finetune" , "XUJA231/Yi-6B_PCH_finetune"]
     Unlearning_model_file_name=["Llama-2-7b-chat-hf","Meta-Llama-3-8B","Meta-Llama-3-8B-Instruct" ,"Yi-6B"]
     seed_list=[20,30,40,50] 
-    all_data=retain_list+forget_list
     # Initialize main Pipeline
     for m in range(len(seed_list)):
         random.seed(seed_list[m])
         # Shuffle lists
-        random.shuffle(forget_list)
-        random.shuffle(retain_list)
+        random.shuffle(Pch)
+        random.shuffle(Pch_Q)
+        random.shuffle(Pch_A)
         for j in range(len(Unlearning_model_name)):
             pipeline = UnlearningPipeline(
                 target_name=Unlearning_model_name[j],
-                forget_data=forget_list,
-                all_forget_retain_data=all_data,
+                forget_data=Pch[0:300],
+                all_forget_retain_data=Pch,
                 similarity_threshold=similarity_threshold,
                 Data_filtering_chunk_size=Data_filtering_chunk_size,
                 device=device,  # Use "cuda" if GPU is available
@@ -302,11 +296,11 @@ if __name__ == "__main__":
             # Initiate unlearning request
             start_time = time.time()
             log_result_path=f"Experiment_record/continuous/{Unlearning_model_file_name[j]}/seed{seed_list[m]}_evaluations_all.json"
-            for i in range(len(forget_list)):
+            for i in range(300):
                 user_id="User"+str(i)
-                model,tokenizer,all_chosen_layers_list,delete_list= pipeline.unlearning_request_handler(user_id, forget_list[i], retain_list, max_length,topk_for_forget, fine_tuning_chunk_size, lr, epochs)
+                model,tokenizer,all_chosen_layers_list,delete_list= pipeline.unlearning_request_handler(user_id, Pch[i], Pch[i+1:], max_length, topk_for_forget, fine_tuning_chunk_size, lr, epochs)
                 if (i+1) % 60 == 0:
-                    Unlearning_Evaluator(user_id, Unlearning_model_name[j], model, tokenizer, forget_list, retain_list, forget_question, retain_question, forget_answer, retain_answer, batch_size, max_length, log_result_path,device)
+                    Unlearning_Evaluator(user_id, Unlearning_model_name[j], model, tokenizer, Pch[0:i+1], Pch[i+1:], Pch_Q[0:i+1], Pch_Q[i+1:], Pch_A[0:i+1], Pch_A[i+1:], batch_size, max_length, log_result_path,device)
             end_time = time.time() 
             print(f"Training time: {end_time - start_time:.2f} seconds")
             # Figure 1: Retain Accuracy vs Forget Requests  
@@ -366,4 +360,5 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
             # Clear PyTorch IPC cache
             torch.cuda.ipc_collect()
+
 
