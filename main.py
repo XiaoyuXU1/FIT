@@ -78,42 +78,6 @@ def log_results(
             f.seek(0)  # Move the file pointer to the beginning
             json.dump(existing_data, f, indent=4, ensure_ascii=False)
 
-def read_json_as_list(file_path):
-    """
-    Read a JSON file and return a list.
-    If the root object of the JSON file is not a list, wrap it into a list and return.
-    """
-    with open(file_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    if isinstance(data, list):
-        return data
-    else:
-        return [data]
-
-
-
-# Define a custom learning rate scheduler
-class CosineAnnealingWithWarmupLR(_LRScheduler):
-    def __init__(self, optimizer, num_warmup_steps, num_training_steps, eta_min=0.0, last_epoch=-1):
-        self.num_warmup_steps = num_warmup_steps
-        self.num_training_steps = num_training_steps
-        self.eta_min = eta_min
-        super(CosineAnnealingWithWarmupLR, self).__init__(optimizer, last_epoch)
-    
-    def get_lr(self):
-        current_step = max(0, self.last_epoch)
-        if current_step < self.num_warmup_steps:
-            # Warm-up phase
-            lr_scale = float(current_step) / float(max(1, self.num_warmup_steps))
-        else:
-            # Cosine annealing phase
-            progress = float(current_step - self.num_warmup_steps) / float(max(1, self.num_training_steps - self.num_warmup_steps))
-            cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
-            lr_scale = (1 - self.eta_min) * cosine_decay + self.eta_min
-
-        return [base_lr * lr_scale for base_lr in self.base_lrs]
-    
-
 def Unlearning_Evaluator(user_id, model_name, model, tokenizer, forget_set, retain_set, forget_question, retain_question, forget_answer, retain_answer, batch_size, max_length, log_result_path, device):
     # Probability
     forget_probability_score=Probability(model, tokenizer, forget_question, forget_answer, batch_size)
@@ -360,5 +324,6 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
             # Clear PyTorch IPC cache
             torch.cuda.ipc_collect()
+
 
 
