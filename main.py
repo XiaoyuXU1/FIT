@@ -237,7 +237,7 @@ if __name__ == "__main__":
     similarity_threshold = args.similarity_threshold  # Similarity threshold for Data_filtering
     device = args.device  # Device to use for training
     epsilon = args.epsilon  # Epsilon for Data_filtering
-    Unlearning_model_name=["XUJA231/Llama-2-7b-chat-hf_PCH_finetunef","XUJA231/Llama-3-8B_PCH_finetune" ,"XUJA231/Llama-3-8B-Instruct_PCH_finetune" , "XUJA231/Yi-6B_PCH_finetune"]
+    Unlearning_model_name=["XUJA231/Llama-2-7b-chat-hf_PCH_finetune","XUJA231/Llama-3-8B_PCH_finetune" ,"XUJA231/Llama-3-8B-Instruct_PCH_finetune" , "XUJA231/Yi-6B_PCH_finetune"]
     Unlearning_model_file_name=["Llama-2-7b-chat-hf","Meta-Llama-3-8B","Meta-Llama-3-8B-Instruct" ,"Yi-6B"]
     seed_list=[20,30,40,50] 
     # Initialize main Pipeline
@@ -324,6 +324,7 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
             # Clear PyTorch IPC cache
             torch.cuda.ipc_collect()
+
 
 
 
