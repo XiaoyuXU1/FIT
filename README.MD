@@ -1,29 +1,39 @@
-# FIT: Scalable and Continual Unlearning for Large Language Models
+# FIT: Defying Catastrophic Forgetting in Continual LLM Unlearning
+
+[🌐 Website](https://xiaoyuxu1.github.io/Fit.github.io/)
+
+---
+
+## ✨ Overview
 
 This repository provides the official implementation of **FIT: Scalable and Continual Unlearning for Large Language Models**.
 
 We introduce **FIT**, a framework designed to address the challenges of unlearning in large language models (LLMs) through:
 
-* **F**iltering: rigorous data filtering to ensure high-quality forget sets,
-* **I**mportance-aware updates: adaptive strategies guided by sample importance, and
-* **T**argeted layer attribution: precise identification of layers most responsible for memorization.
+- **🧹 Filtering**: rigorous data filtering to ensure high-quality forget sets  
+- **📌 Importance-aware updates**: adaptive strategies guided by sample importance  
+- **🎯 Targeted layer attribution**: precise identification of layers most responsible for memorization  
 
 Together, these components enable effective forgetting without compromising model utility.
 
+---
+
+## 🧪 Benchmark: PCH
+
 To support realistic evaluation, we propose the **PCH benchmark**, which encompasses diverse deletion scenarios:
 
-* **P**ersonal information,
-* **C**opyrighted material, and
-* **H**armful content.
+- **👤 Personal information**
+- **📄 Copyrighted material**
+- **⚠️ Harmful content**
 
 We also introduce comprehensive metrics to jointly measure forgetting effectiveness and utility retention.
 Across multiple LLMs, FIT consistently outperforms strong baselines, achieving better forgetting–utility trade-offs, reducing catastrophic forgetting under *malicious unlearning*, and remaining competitive under *relearning via fine-tuning* while robust to *quantization attacks*.
 
 ---
 
-## Reproducing Results
+## 🔁 Reproducing Results
 
-### 1. Create a Conda environment and install requirements
+### 🧰 1. Create a Conda environment and install requirements
 
 ```bash
 conda create -n FIT python=3.10.15
@@ -33,9 +43,11 @@ conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit
 pip install -r requirements.txt
 pip install flash-attn==2.5.3 --no-build-isolation
 python -m spacy download en_core_web_sm
-```
+````
+
 ---
-### 2. Run experiments
+
+### 🚀 2. Run experiments
 
 Use the following command to reproduce experimental results:
 
@@ -49,7 +61,7 @@ python main.py \
 
 ---
 
-### 3. Evaluate the unlearned model
+### 📊 3. Evaluate the unlearned model
 
 Run the provided notebook:
 
@@ -57,4 +69,16 @@ Run the provided notebook:
 FQ_RU_cal.ipynb
 ```
 
+---
 
+## 📝 Citation
+
+If you find FIT or the PCH benchmark useful, please cite:
+
+```bibtex
+@article{fit2026,
+  title={FIT: Scalable and Continual Unlearning for Large Language Models},
+  author={Xiaoyu Xu and others},
+  year={2026}
+}
+```
