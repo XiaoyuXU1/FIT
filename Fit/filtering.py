@@ -26,11 +26,6 @@ TensorLike = Union[torch.Tensor, List[torch.Tensor]]
 
 # ======= 1. Unlearn_request_memory =======
 class Unlearn_request_memory:
-    """
-    Stores unlearning requests; ensures that each record returned by 
-    retrieve_unlearning_data() has r["data"] as torch.Tensor([D]), 
-    making it convenient for torch.stack later.
-    """
     def __init__(self, embed_fn: Optional[Callable[[str], torch.Tensor]] = None):
         """
         Args:
@@ -68,13 +63,6 @@ class Unlearn_request_memory:
         return self._to_vec1d(emb)
 
     def store_unlearning_data(self, user_id: Any, data_to_forget: Any) -> None:
-        """
-        Accepts Tensor / list[Tensor] / str / list[str]:
-        - list: store each item recursively
-        - Tensor: normalize into [D] and store each vector as a separate record
-        - str: if embed_fn is provided, convert to embedding immediately; 
-               otherwise store text directly (to be converted later if possible)
-        """
         # list/tuple: expand and store
         if isinstance(data_to_forget, (list, tuple)):
             for item in data_to_forget:
@@ -109,12 +97,6 @@ class Unlearn_request_memory:
             })
 
     def retrieve_unlearning_data(self) -> List[Dict[str, Any]]:
-        """
-        Each record returned satisfies: record['data'] is torch.Tensor([D]) (CPU/float32).
-        - Normalize and expand any historical mis-stored list/tensor/high-dim inputs
-        - For text records: if embed_fn exists, convert on the fly; otherwise skip 
-          (to avoid torch.stack errors later)
-        """
         out: List[Dict[str, Any]] = []
         for rec in self.unlearning_memory:
             val = rec.get('data', None)
@@ -151,14 +133,6 @@ class Unlearn_request_memory:
         return out
 
 class Data_filtering:
-    """
-    Data filtering utility, used to clean/preprocess data before unlearning.
-    This example compares new data with historical unlearning data semantically:
-    - If similarity is high, further check for rare tokens and cross-entropy loss difference.
-    - Keeps chunks that matter, removes redundant/insignificant ones.
-
-    Uses a SimCSE model for semantic embeddings and a Causal LM for cross-entropy scoring.
-    """
 
     def __init__(
         self,
@@ -348,4 +322,5 @@ class Data_filtering:
             return filtered_data, delete_data,filtered_data_embedding
         else:
             return filtered_data, "",filtered_data_embedding
+
 
