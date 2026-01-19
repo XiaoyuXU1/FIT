@@ -25,11 +25,6 @@ TensorLike = Union[torch.Tensor, List[torch.Tensor]]
 
 # LayerAttributionSelector
 class LayerAttributionSelector:
-    """
-      2) When new forget data is provided, perform a second round of filtering only among candidate layers
-         - Similarly, compute the loss difference for each sample (or a single sample if only one exists),
-           then take the average.
-    """
 
     def __init__(self,
                  model,
@@ -137,3 +132,4 @@ class LayerAttributionSelector:
         print("Attribution layers for forget_data:", layer_forget_diff_sorted)
         print(f"Top {topk_for_forget} most influential layers for forget_data: {final_selected_layers}")
         return final_selected_layers
+
