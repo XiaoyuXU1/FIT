@@ -51,15 +51,6 @@ class CosineAnnealingWithWarmupLR(_LRScheduler):
     
 # Unlearning algorithm selection
 def compute_importance(text, model, tokenizer):
-    """
-    Compute the importance score for a single sample based on the gradient of input embeddings.
-
-    Steps:
-    1. Encode the text into input_ids
-    2. Obtain embeddings and set requires_grad = True
-    3. Forward pass to compute the loss (labels = input_ids)
-    4. Backward pass to get gradients, then take the L2 norm of the gradient as the importance score
-    """
     # Encode the text into token ids
     input_ids = tokenizer.encode(text, return_tensors='pt').to(model.device)
 
@@ -90,10 +81,6 @@ def compute_importance(text, model, tokenizer):
     return importance_score
 
 class FineTuning:
-    """
-    Fine-tune the model on selected layers.
-    The fine-tuning target includes the chosen MLP and Attention layers.
-    """
     def __init__(self, model, infer_model, tokenizer, selected_layers, lr=1e-6, device='cuda'):
         """
         Args:
@@ -189,3 +176,4 @@ class FineTuning:
             NPO(self.model, self.infer_model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.device)        
 
         print("[FineTuning] Fine-tuning complete.")
+
