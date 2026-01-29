@@ -80,11 +80,13 @@ FQ_RU_cal.ipynb
 If you find FIT or the PCH benchmark useful, please cite:
 
 ```bibtex
-@article{fit2026,
-  title={FIT: Scalable and Continual Unlearning for Large Language Models},
-  author={Xiaoyu Xu and others},
+@misc{xufit2026,
+  title={{FIT}: Defying Catastrophic Forgetting in Continual {LLM} Unlearning}},
+  author = {Xiaoyu Xu and Minxin Du and Kun Fang and Zi Liang and Yaxin Xiao and Zhicong Huang and Cheng Hong and Qingqing Ye and Haibo Hu},
+ howpublished   = {arXiv:xxxxxx},   
   year={2026}
 }
 ```
+
 
 
