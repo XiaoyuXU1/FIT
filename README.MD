@@ -81,12 +81,13 @@ If you find FIT or the PCH benchmark useful, please cite:
 
 ```bibtex
 @misc{xufit2026,
-  --title={{FIT}: Defying Catastrophic Forgetting in Continual {LLM} Unlearning}},
-  --author={Xiaoyu Xu and Minxin Du and Kun Fang and Zi Liang and Yaxin Xiao and Zhicong Huang and Cheng Hong and Qingqing Ye and Haibo Hu},
-  --howpublished={arXiv:xxxxxx},   
-  --year={2026}
+  title={{FIT}: Defying Catastrophic Forgetting in Continual {LLM} Unlearning}},
+  author={Xiaoyu Xu and Minxin Du and Kun Fang and Zi Liang and Yaxin Xiao and Zhicong Huang and Cheng Hong and Qingqing Ye and Haibo Hu},
+  howpublished={arXiv:xxxxxx},   
+  year={2026}
 }
 ```
+
 
 
 
