@@ -257,15 +257,12 @@ if __name__ == "__main__":
                 device=device,  # Use "cuda" if GPU is available
                 epsilon=epsilon
             )
-            # Initiate unlearning request
-            start_time = time.time()
             log_result_path=f"Experiment_record/continuous/{Unlearning_model_file_name[j]}/seed{seed_list[m]}_evaluations_all.json"
             for i in range(300):
                 user_id="User"+str(i)
                 model,tokenizer,all_chosen_layers_list,delete_list= pipeline.unlearning_request_handler(user_id, Pch[i], Pch[i+1:], max_length, topk_for_forget, fine_tuning_chunk_size, lr, epochs)
                 if (i+1) % 60 == 0:
                     Unlearning_Evaluator(user_id, Unlearning_model_name[j], model, tokenizer, Pch[0:i+1], Pch[i+1:], Pch_Q[0:i+1], Pch_Q[i+1:], Pch_A[0:i+1], Pch_A[i+1:], batch_size, max_length, log_result_path,device)
-            end_time = time.time() 
             print(f"Training time: {end_time - start_time:.2f} seconds")
             # Figure 1: Retain Accuracy vs Forget Requests  
 
@@ -287,6 +284,7 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
             # Clear PyTorch IPC cache
             torch.cuda.ipc_collect()
+
 
 
 
