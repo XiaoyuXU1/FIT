@@ -51,7 +51,7 @@ python -m spacy download en_core_web_sm
 
 ---
 
-### 🚀 2. Run experiments
+### 🚀 2. Run experiments and evaluations
 
 Use the following command to reproduce experimental results:
 
@@ -65,18 +65,6 @@ python FIT.py \
   --device "cuda:0"
 ```
 
----
-
-### 📊 3. Evaluate the unlearned model
-
-Run the provided notebook:
-
-```bash
-FQ_RU_cal.ipynb
-```
-
----
-
 ## 📝 Citation
 
 If you find FIT or the PCH benchmark useful, please cite:
@@ -89,3 +77,4 @@ If you find FIT or the PCH benchmark useful, please cite:
   year={2026}
 }
 ```
+
