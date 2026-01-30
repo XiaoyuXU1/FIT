@@ -64,6 +64,8 @@ python FIT.py \
   --epsilon 0.2 \
   --device "cuda:0"
 ```
+**Evaluation (MMLU / CommonsenseQA / GSM8K):** we use [OpenCompass](https://github.com/open-compass/opencompass).  
+**Quantization attack:** we follow [FailureLLMUnlearning](https://github.com/zzwjames/FailureLLMUnlearning).
 
 ## 📝 Citation
 
@@ -77,5 +79,6 @@ If you find FIT or the PCH benchmark useful, please cite:
   year={2026}
 }
 ```
+
 
 
