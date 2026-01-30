@@ -56,7 +56,9 @@ python -m spacy download en_core_web_sm
 Use the following command to reproduce experimental results:
 
 ```bash
-python main.py \
+python FIT.py \
+  --unlearning_model_name "FITPCH/Llama-2-7b-chat-hf_PCH_finetune" \
+  --retain_model_name "FITPCH/Llama-2-7b-chat-hf_PCH_retain" \
   --topk_for_forget 8 \
   --similarity_threshold 0.90 \
   --epsilon 0.2 \
@@ -83,15 +85,7 @@ If you find FIT or the PCH benchmark useful, please cite:
 @misc{xufit2026,
   title={{FIT}: Defying Catastrophic Forgetting in Continual {LLM} Unlearning},
   author={Xiaoyu Xu and Minxin Du and Kun Fang and Zi Liang and Yaxin Xiao and Zhicong Huang and Cheng Hong and Qingqing Ye and Haibo Hu},
-  howpublished={arXiv:xxxxxx},   
+  howpublished={arXiv:2601.21682},   
   year={2026}
 }
 ```
-
-
-
-
-
-
-
-
