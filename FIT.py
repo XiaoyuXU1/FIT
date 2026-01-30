@@ -25,48 +25,37 @@ from cycler import cycler
 from Fit.algorithm import FineTuning
 from Fit.filtering import Unlearn_request_memory, Data_filtering
 from Fit.layer import LayerAttributionSelector
-
+from pathlib import Path
 TensorLike = Union[torch.Tensor, List[torch.Tensor]]
 
 def cubic_root(x):
     sign = 1 if x >= 0 else -1
     return sign * (abs(x) ** (1/3))
 
-def log_results(
-    log_file,
-    user_id,
-    FD,
-    RQ
-):
-    """
-    Record log data into a file.
+def log_results(log_file, user_id, FD, RQ):
+    log_file = Path(log_file)
+    log_file.parent.mkdir(parents=True, exist_ok=True)  # 关键：创建目录
 
-    Args:
-      log_file: Path to the log file. Must end with .json
-      user_id: User ID.
-      Forget Degree: Forget Degree.
-      Retain Quality: Retain Quality.
-    """
-    # Construct the record data dictionary
     log_data = {
         "user_id": user_id,
         "Forget Degree": FD,
         "Retain Quality": RQ,
     }
-    
-    # If the file does not exist, create a new file and write data (stored as a list for later appending)
-    if not os.path.exists(log_file):
-        with open(log_file, 'w') as f:
+
+    if not log_file.exists():
+        with log_file.open("w", encoding="utf-8") as f:
             json.dump([log_data], f, indent=4, ensure_ascii=False)
     else:
-        # If the file exists, read existing data, append, and rewrite
-        with open(log_file, 'r+') as f:
+        with log_file.open("r+", encoding="utf-8") as f:
             try:
                 existing_data = json.load(f)
+                if not isinstance(existing_data, list):  # 防御：不是list就重置
+                    existing_data = [existing_data]
             except json.JSONDecodeError:
                 existing_data = []
             existing_data.append(log_data)
-            f.seek(0)  # Move the file pointer to the beginning
+            f.seek(0)
+            f.truncate()  # 建议：避免新内容比旧内容短导致尾巴残留
             json.dump(existing_data, f, indent=4, ensure_ascii=False)
 
 def Unlearning_Evaluator(model, tokenizer, forget_set, retain_set, forget_question, retain_question, forget_answer, retain_answer, batch_size, max_length, device):
@@ -99,7 +88,7 @@ def linear_interp_values(y_start, y_end, xs=(60, 120, 180, 240, 300), x0=0, x1=3
         raise ValueError("x1 must be different from x0")
     a = (y_end - y_start) / (x1 - x0)
     b = y_start - a * x0
-    return {x: a * x + b for x in xs}
+    return [a * x + b for x in xs]
 #Compute FQ and RQ curves
 def compute_forget_retain_Q(
                             unlearning_model_name: str,
@@ -297,7 +286,7 @@ if __name__ == "__main__":
     # Compute FQ and RQ curves
     Forget_Q_list,Retain_Q_list=compute_forget_retain_Q(Unlearning_model_name, retain_model_name, Pch[0:300], Pch[300:], Pch_Q[0:300],Pch_Q[300:], Pch_A[0:300], Pch_A[300:], batch_size, max_length, device)
     Unlearning_model_file_name=Unlearning_model_name.replace("/", "_")
-    seed_list=[20,30,40,50] 
+    seed_list=[30,40,20,50] 
     # Initialize main Pipeline
     for m in range(len(seed_list)):
         random.seed(seed_list[m])
@@ -342,12 +331,12 @@ if __name__ == "__main__":
                 RQ=RQ_list[idx]
             )
         # # Save model weights
-        # # Check if folder exists, if not create it
-        with open(f"Experiment_record/continuous/{Unlearning_model_file_name}/seed{seed_list[m]}_comparison.json", "w", encoding="utf-8") as f:
+        filter_comparison_path = Path(f"Experiment_record/{Unlearning_model_file_name}/seed{seed_list[m]}_filter_comparison.json")
+        filter_comparison_path.parent.mkdir(parents=True, exist_ok=True)
+        with filter_comparison_path.open("w", encoding="utf-8") as f:
             json.dump(delete_list, f, ensure_ascii=False, indent=4)
-        model_save_path=f"Model/continuous/{Unlearning_model_file_name}/seed{seed_list[m]}"
-        if not os.path.exists(model_save_path):
-            os.makedirs(model_save_path)
+        model_save_path = Path(f"Model/{Unlearning_model_file_name}/seed{seed_list[m]}")
+        model_save_path.mkdir(parents=True, exist_ok=True)
         model.save_pretrained(model_save_path)
         tokenizer.save_pretrained(model_save_path)
         del model
