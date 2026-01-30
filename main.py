@@ -57,10 +57,6 @@ def log_results(
         "user_id": user_id,
         "forget_probability_score": forget_probability_score,
         "forget_rouge": forget_rouge,
-        "forget_acc": forget_acc,
-        "retain_probability_score": retain_probability_score,
-        "retain_rouge": retain_rouge,
-        "retain_acc": retain_acc,
     }
     
     # If the file does not exist, create a new file and write data (stored as a list for later appending)
@@ -206,8 +202,9 @@ class UnlearningPipeline:
 import argparse
 def parse_args():
     parser = argparse.ArgumentParser(description="Unlearning Pipeline Hyperparameters")
-
+    
     # Core hyperparameters
+    parser.add_argument("--unlearning_model_name",type=str,default="FITPCH/Llama-2-7b-chat-hf_PCH_finetune", help="unlearning model names")
     parser.add_argument("--topk_for_forget", type=int, default=8,
                         help="Number of top-k layers to select for forgetting")
     parser.add_argument("--similarity_threshold", type=float, default=0.90,
@@ -237,8 +234,8 @@ if __name__ == "__main__":
     similarity_threshold = args.similarity_threshold  # Similarity threshold for Data_filtering
     device = args.device  # Device to use for training
     epsilon = args.epsilon  # Epsilon for Data_filtering
-    Unlearning_model_name=["FITPCH/Llama-2-7b-chat-hf_PCH_finetune","FITPCH/Llama-3-8B_PCH_finetune" ,"FITPCH/Llama-3-8B-Instruct_PCH_finetune" , "FITPCH/Yi-6B_PCH_finetune"]
-    Unlearning_model_file_name=["Llama-2-7b-chat-hf","Meta-Llama-3-8B","Meta-Llama-3-8B-Instruct" ,"Yi-6B"]
+    Unlearning_model_name=args.unlearning_model_name
+    Unlearning_model_file_name=Unlearning_model_name.replace("/", "_")
     seed_list=[20,30,40,50] 
     # Initialize main Pipeline
     for m in range(len(seed_list)):
@@ -257,7 +254,7 @@ if __name__ == "__main__":
                 device=device,  # Use "cuda" if GPU is available
                 epsilon=epsilon
             )
-            log_result_path=f"Experiment_record/continuous/{Unlearning_model_file_name[j]}/seed{seed_list[m]}_evaluations_all.json"
+            log_result_path=f"Experiment_record/continuous/{Unlearning_model_file_name}/seed{seed_list[m]}_evaluations_all.json"
             for i in range(300):
                 user_id="User"+str(i)
                 model,tokenizer,all_chosen_layers_list,delete_list= pipeline.unlearning_request_handler(user_id, Pch[i], Pch[i+1:], max_length, topk_for_forget, fine_tuning_chunk_size, lr, epochs)
@@ -268,9 +265,9 @@ if __name__ == "__main__":
 
             # # Save model weights
             # # Check if folder exists, if not create it
-            with open(f"Experiment_record/continuous/{Unlearning_model_file_name[j]}/seed{seed_list[m]}_comparison.json", "w", encoding="utf-8") as f:
+            with open(f"Experiment_record/continuous/{Unlearning_model_file_name}/seed{seed_list[m]}_comparison.json", "w", encoding="utf-8") as f:
                 json.dump(delete_list, f, ensure_ascii=False, indent=4)
-            model_save_path=f"Model/continuous/{Unlearning_model_file_name[j]}/seed{seed_list[m]}"
+            model_save_path=f"Model/continuous/{Unlearning_model_file_name}/seed{seed_list[m]}"
             if not os.path.exists(model_save_path):
                 os.makedirs(model_save_path)
             model.save_pretrained(model_save_path)
@@ -284,6 +281,7 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
             # Clear PyTorch IPC cache
             torch.cuda.ipc_collect()
+
 
 
 
