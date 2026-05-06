@@ -59,7 +59,7 @@ Use the following command to reproduce experimental results:
 python FIT.py \
   --unlearning_model_name "FITPCH/Llama-2-7b-chat-hf_PCH_finetune" \
   --retain_model_name "FITPCH/Llama-2-7b-chat-hf_PCH_retain" \
-  --topk_for_forget 8 \
+  --topk_for_forget 0.25 \
   --similarity_threshold 0.90 \
   --epsilon 0.2 \
   --device "cuda:0"
