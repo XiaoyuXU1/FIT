@@ -34,7 +34,7 @@ def cubic_root(x):
 
 def log_results(log_file, user_id, FD, RQ):
     log_file = Path(log_file)
-    log_file.parent.mkdir(parents=True, exist_ok=True)  # 关键：创建目录
+    log_file.parent.mkdir(parents=True, exist_ok=True)  # 
 
     log_data = {
         "user_id": user_id,
@@ -49,13 +49,13 @@ def log_results(log_file, user_id, FD, RQ):
         with log_file.open("r+", encoding="utf-8") as f:
             try:
                 existing_data = json.load(f)
-                if not isinstance(existing_data, list):  # 防御：不是list就重置
+                if not isinstance(existing_data, list):  #
                     existing_data = [existing_data]
             except json.JSONDecodeError:
                 existing_data = []
             existing_data.append(log_data)
             f.seek(0)
-            f.truncate()  # 建议：避免新内容比旧内容短导致尾巴残留
+            f.truncate()  # 
             json.dump(existing_data, f, indent=4, ensure_ascii=False)
 
 def Unlearning_Evaluator(model, tokenizer, forget_set, retain_set, forget_question, retain_question, forget_answer, retain_answer, batch_size, max_length, device):
@@ -101,9 +101,11 @@ def compute_forget_retain_Q(
                             retain_answer,
                             batch_size: int,
                             max_length: int,
-                            device: str):
+                            device="cuda:0"):
     # 1) load model/tokenizer
     tokenizer = AutoTokenizer.from_pretrained(retain_model_name)
+    #For Qwen3
+    tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -152,12 +154,11 @@ class UnlearningPipeline:
                  all_forget_retain_data: list[str] = None,
                  similarity_threshold: float = 0.95,
                  Data_filtering_chunk_size: int = 128,
-                 device="cuda",
+                 device="cuda:2",
                  epsilon: float = 0.1
                  ):
         self.delete_data_list=[]
         self.all_chosen_layers_list=[]
-        self.device = device
         self.epsilon = epsilon
         self.forget_list=forget_data
         # 2) Load Target Model (actually perform unlearning operation) and infer model
@@ -167,25 +168,28 @@ class UnlearningPipeline:
                                                                 torch_dtype=torch.bfloat16,
                                                                 trust_remote_code= True,
                                                                 use_flash_attention_2= True,
+                                                                device_map="auto"
                                                             )
         self.infer_model=AutoModelForCausalLM.from_pretrained(target_name,       
                                                                 torch_dtype=torch.bfloat16,
                                                                 trust_remote_code= True,
                                                                 use_flash_attention_2= True,
                                                             )                                             
-        self.infer_model.to(self.device)
-        self.target_model.to(self.device)
+        # self.infer_model.to(self.device)
+        self.infer_model.to(self.target_model.device)
+        self.target_tokenizer.padding_side = "left"
         if self.target_tokenizer.pad_token is None:
             self.target_tokenizer.pad_token = self.target_tokenizer.eos_token
             self.target_tokenizer.pad_token_id = self.target_tokenizer.eos_token_id
         # Initialize other submodules
+        self.device = self.target_model.device
         self.request_memory = Unlearn_request_memory()
         num_layers = len(self.target_model.model.layers)
         self.data_filtering = Data_filtering(
                                             simcse_model_name = "princeton-nlp/sup-simcse-bert-base-uncased",
                                             similarity_threshold= similarity_threshold,
                                             chunk_size = Data_filtering_chunk_size,
-                                            device = self.device,
+                                            device = self.target_model.device,
                                             epsilon=self.epsilon,
                                             language_model=self.target_model,
                                             language_tokenizer=self.target_tokenizer)
@@ -195,7 +199,7 @@ class UnlearningPipeline:
         """
         Simplified: Let the Target Model infer the text once to obtain a vector (e.g., softmax logits).
         """
-        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length, padding='max_length').to(self.device)
+        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length, padding='max_length').to(self.target_model.device)
         with torch.no_grad():
             outputs = model(**inputs)
         logits = outputs.logits  # shape: [batch_size, seq_len, vocab_size]
@@ -221,7 +225,7 @@ class UnlearningPipeline:
         return vec.cpu().numpy()
 
 
-    def unlearning_request_handler(self, user_id: str, x_forget: str, x_retain: list[str], max_length,topk_for_forget, fine_tuning_chunk_size, lr, epochs):
+    def unlearning_request_handler(self, user_id: str, x_forget: str, x_retain: list[str], topk_for_forget, fine_tuning_chunk_size, lr, epochs):
         print(f"\n[UnlearningPipeline] Received unlearning request from user={user_id}")  #, data={x_forget}
         all_records = self.request_memory.retrieve_unlearning_data()
         all_data = [r["data"] for r in all_records]
@@ -231,12 +235,12 @@ class UnlearningPipeline:
         if delete_data:
             self.delete_data_list.append(delete_data)
         if not filtered_data:
-            return 0,0 # No need to continue
+            return 0,0,0,0 # No need to continue
         print("[Pipeline] Start Layer choices ...")
         chosen_layer_index = self.layer_selector.select_forget_layers(filtered_data,topk_for_forget=topk_for_forget)
         self.all_chosen_layers_list.append(chosen_layer_index)
         # Fine-tuning
-        fine_tuner = FineTuning(self.target_model,self.infer_model,self.target_tokenizer,chosen_layer_index,lr=lr,device=self.device)
+        fine_tuner = FineTuning(self.target_model,self.infer_model,self.target_tokenizer,chosen_layer_index,lr=lr,device=self.target_model.device)
         fine_tuner.run_finetuning(x_retain , filtered_data,epochs=epochs,chunk_size=fine_tuning_chunk_size)
         # Store data
         self.request_memory.store_unlearning_data(user_id, filtered_data_embedding)
@@ -248,15 +252,15 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Unlearning Pipeline Hyperparameters")
     
     # Core hyperparameters
-    parser.add_argument("--unlearning_model_name",type=str,default="FITPCH/Llama-2-7b-chat-hf_PCH_finetune", help="unlearning model names")
-    parser.add_argument("--retain_model_name",type=str,default="FITPCH/Llama-2-7b-chat-hf_PCH_retain", help="retain model names")
-    parser.add_argument("--topk_for_forget", type=int, default=8,
-                        help="Number of top-k layers to select for forgetting")
+    parser.add_argument("--unlearning_model_name",type=str,default="", help="unlearning model names")
+    parser.add_argument("--retain_model_name",type=str,default="", help="retain model names")
+    parser.add_argument("--topk_for_forget", type=float, default=0.25,
+                        help="Ratio of top layers to select for forgetting (0 < ratio <= 1), e.g. 0.25 means top 25%% layers")
     parser.add_argument("--similarity_threshold", type=float, default=0.90,
                         help="Similarity threshold for Data_filtering")
     parser.add_argument("--epsilon", type=float, default=0.2,
                         help="Epsilon threshold for Data_filtering")
-    parser.add_argument("--device", type=str, default="cuda:0",
+    parser.add_argument("--device", type=str, default="cuda:2",
                         help="Device to use for training (e.g., 'cuda:0' or 'cpu')")
     return parser.parse_args()
 
@@ -270,31 +274,29 @@ if __name__ == "__main__":
     Pch_Q=Pch_QA['train']["question"]
     Pch_A=Pch_QA['train']["answer"]
     # Parameter settings
-    lr =3e-5   # Learning rate for fine-tuning
+    lr =5e-6   # Learning rate for fine-tuning
     epochs = 3  # Number of fine-tuning epochs
     batch_size=10
     max_length = 128  # Maximum length for computing p_output
-    fine_tuning_chunk_size = 1024  # Chunk size for fine-tuning
+    fine_tuning_chunk_size = 256  # Chunk size for fine-tuning
     Data_filtering_chunk_size = 8 # Chunk size for Data_filtering 
     args = parse_args()
-    topk_for_forget = args.topk_for_forget # Number of topk layers to select
+    topk_for_forget = args.topk_for_forget # Ratio of top layers to select
     similarity_threshold = args.similarity_threshold  # Similarity threshold for Data_filtering
     device = args.device  # Device to use for training
     epsilon = args.epsilon  # Epsilon for Data_filtering
     Unlearning_model_name=args.unlearning_model_name
     retain_model_name=args.retain_model_name
     # Compute FQ and RQ curves
-    Forget_Q_list,Retain_Q_list=compute_forget_retain_Q(Unlearning_model_name, retain_model_name, Pch[0:300], Pch[300:], Pch_Q[0:300],Pch_Q[300:], Pch_A[0:300], Pch_A[300:], batch_size, max_length, device)
+    Forget_Q_list,Retain_Q_list=compute_forget_retain_Q(Unlearning_model_name, retain_model_name, Pch[0:300], Pch[300:], Pch_Q[0:300],Pch_Q[300:], Pch_A[0:300], Pch_A[300:], batch_size, max_length)
     Unlearning_model_file_name=Unlearning_model_name.replace("/", "_")
-    seed_list=[30,40,20,50] 
+    seed_list=[42] 
     # Initialize main Pipeline
     for m in range(len(seed_list)):
         random.seed(seed_list[m])
-        # Shuffle lists
-        for L in (Pch, Pch_Q, Pch_A):
-            tmp = L[:300]
-            random.shuffle(tmp)
-            L[:300] = tmp
+        tmp = list(zip(Pch[:300], Pch_Q[:300], Pch_A[:300]))
+        random.shuffle(tmp)
+        Pch[:300], Pch_Q[:300], Pch_A[:300] = map(list, zip(*tmp))
         Forget_list=[]
         Retain_list=[]
         pipeline = UnlearningPipeline(
@@ -309,7 +311,7 @@ if __name__ == "__main__":
         log_result_path=f"Experiment_record/continuous/{Unlearning_model_file_name}/seed{seed_list[m]}_evaluations_all.json"
         for i in range(300):
             user_id="User"+str(i)
-            model,tokenizer,all_chosen_layers_list,delete_list= pipeline.unlearning_request_handler(user_id, Pch[i], Pch[i+1:], max_length, topk_for_forget, fine_tuning_chunk_size, lr, epochs)
+            model,tokenizer,all_chosen_layers_list,delete_list= pipeline.unlearning_request_handler(user_id, Pch[i], Pch[i+1:], topk_for_forget, fine_tuning_chunk_size, lr, epochs)
             if (i+1) % 60 == 0:
                 #Calculate F and R
                 Forget,Retain = Unlearning_Evaluator(model, tokenizer, Pch[0:i+1], Pch[i+1:], Pch_Q[0:i+1], Pch_Q[i+1:], Pch_A[0:i+1], Pch_A[i+1:], batch_size, max_length, device)
@@ -321,7 +323,7 @@ if __name__ == "__main__":
         User_id=[60,120,180,240,300]
         FD_list=FD_RQ_calculate(Forget_list,Forget_Q_list)
         RQ_list=FD_RQ_calculate(Retain_list,Retain_Q_list)
-        log_result_path=f"Experiment_record/continuous/{Unlearning_model_file_name}/seed{seed_list[m]}_evaluations_all.json"
+        log_result_path=f"Experiment_record/{Unlearning_model_file_name}/seed{seed_list[m]}_evaluations_all.json"
         # Log results for FD and RQ for each 60 users
         for idx in range(len(User_id)):
             log_results(
