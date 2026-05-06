@@ -93,11 +93,11 @@ class LayerAttributionSelector:
 
     def select_forget_layers(self,
                              forget_data: str,
-                             topk_for_forget: int = 5) -> List[int]:
+                             topk_for_forget: float = 0.25) -> List[int]:
         """
-        Step 2: From self.candidate_layers (obtained via precompute_retain_candidates),
-                filter further based on forget_data and select the top-k layers
-                that most impact forget_data.
+        Select the most influential layers for forget_data.
+        `topk_for_forget` is expected to be a ratio in (0, 1], where
+        0.25 means selecting top 25% layers by attribution score.
 
         Call precompute_retain_candidates() before using this method.
         """
@@ -126,10 +126,15 @@ class LayerAttributionSelector:
             diff_forget = abs(masked_loss_forget - orig_loss_forget)
             layer_forget_diff.append((layer_idx, diff_forget))
 
+        if not (0 < topk_for_forget <= 1):
+            raise ValueError(
+                f"topk_for_forget must be a ratio in (0, 1], got {topk_for_forget}"
+            )
+        selected_layer_count = max(1, math.ceil(self.num_layers * topk_for_forget))
+
         # Sort layers by their influence on forget_data, descending
         layer_forget_diff_sorted = sorted(layer_forget_diff, key=lambda x: x[1], reverse=True)
-        final_selected_layers = [x[0] for x in layer_forget_diff_sorted[:topk_for_forget]]
+        final_selected_layers = [x[0] for x in layer_forget_diff_sorted[:selected_layer_count]]
         print("Attribution layers for forget_data:", layer_forget_diff_sorted)
-        print(f"Top {topk_for_forget} most influential layers for forget_data: {final_selected_layers}")
+        print(f"Top {topk_for_forget:.4f} ratio => {selected_layer_count} layers for forget_data: {final_selected_layers}")
         return final_selected_layers
-
