@@ -1,4 +1,4 @@
-# FIT: Defying Catastrophic Forgetting in Continual LLM Unlearning
+# FIT to Forget: Robust Continual Unlearning for Large Language Models
 
 <div align="center">
 
