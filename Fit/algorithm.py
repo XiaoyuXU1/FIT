@@ -152,11 +152,11 @@ class FineTuning:
             num_training_steps=total_steps,
             eta_min=0.1
         )
-        score = compute_importance(forget_data, self.model, self.tokenizer)
+        score = compute_importance(forget_data, self.model, self.tokenizer)   #
         print(f"The importance of data: {score}")
-        if score >= 12:
+        if score >= 1:
             unlearning_algorithm = "NPO_KL"
-        elif score < 12 and score >= 6:  
+        elif score < 1 and score >= 0.5:  
             unlearning_algorithm = "NPO"
         else:
             unlearning_algorithm = "RL"
