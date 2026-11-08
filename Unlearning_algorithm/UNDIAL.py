@@ -30,7 +30,7 @@ def UNDIAL(
     This is a FIT pilot-compatible implementation, not the full official UNDIAL
     code. It uses teacher-guided retain logits and adjusted high-entropy forget
     targets, which provides a distillation-style per-request update primitive
-    for the rebuttal pilot.
+    for continual unlearning.
     """
     random.shuffle(retain_set)
     retain_data = " ".join(retain_set)

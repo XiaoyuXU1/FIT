@@ -2,19 +2,19 @@
 
 | Method | Entry point | Status |
 | --- | --- | --- |
-| FIT | `experiments/run_rebuttal.py --method FIT` | Filtering, layer attribution, importance routing |
-| NPO+KL | same runner, `--method NPO_KL` | Fixed primitive; optional `--filter` control |
-| RLabel | same runner, `--method RL` | Fixed random-label primitive; optional filtering |
+| FIT | `experiments/run_unlearning.py --method FIT` | Filtering, layer attribution, importance routing |
+| NPO+KL | same runner, `--method NPO_KL` | Fixed primitive |
+| RLabel | same runner, `--method RL` | Fixed random-label primitive |
 | ALKN | `experiments/alkn.py` via `--method ALKN` | Paper reimplementation adapted to PCH |
 | O³ | `experiments/o3.py` via `--method O3` | Architecture/task port using the author detector |
 | CURaTE | `experiments/run_curate.py` | Frozen LLM plus trained embedding retrieval/refusal |
 | GA, GA+GD, GA+KL, NPO | `Baselines.py` and `Unlearning_algorithm/` | Legacy evaluation protocol |
-| RULE, UNDIAL, PISCES | `Unlearning_algorithm/` | Legacy/experimental functions; not modern-runner methods |
+| RULE, UNDIAL, PISCES | `Unlearning_algorithm/` | Function-level baseline implementations; not modern-runner methods |
 
 ## ALKN
 
 [Paper](https://arxiv.org/abs/2611.02620). The linked author repository was
-unavailable when this implementation was prepared. The supplementary port includes
+unavailable when this implementation was prepared. The PCH port includes
 ESL-style soft labels, mask-based updates and task-vector negation. It uses a
 fixed retain minibatch per request, a fixed uniform 131072-element sample for
 global robust quantiles, and CPU-offloaded snapshots, gradients, and masks.
@@ -22,7 +22,7 @@ These adaptations materially affect runtime/memory and must be disclosed.
 
 `Unlearning_algorithm/ALKN.py` is an older implementation retained because the
 legacy driver imports it. It omits task-vector negation and must not be used as
-an equivalent implementation of the supplementary method.
+an equivalent implementation of the PCH method.
 
 ## O³
 

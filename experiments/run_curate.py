@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from sentence_transformers import SentenceTransformer
 
-from experiments.behavioral import generate_answers, response_statistics, measure_latency, stage_responses, knowledge_probes
+from experiments.behavioral import generate_answers, response_statistics, measure_latency, stage_responses
 from experiments.qwen35_common import load_model,load_tokenizer,pch_records,manifest,seed_all,write_json
 
 
@@ -33,8 +33,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--model',default='FITPCH/Llama-3-8B_PCH_finetune')
     parser.add_argument('--embedder',default='Model/CURaTE-mpnet-NQ18K-seed42')
-    parser.add_argument('--output',default='Experiment_record/Llama-3-8B-PCH/rebuttal_v2/CURaTE')
-    parser.add_argument('--probe_bank',default='Experiment_record/probe_bank.json')
+    parser.add_argument('--output',default='Experiment_record/Llama-3-8B-PCH/pch_v2/CURaTE')
     parser.add_argument('--max_requests',type=int,default=300)
     parser.add_argument('--eval_limit',type=int,default=0)
     args=parser.parse_args()
@@ -44,11 +43,7 @@ def main():
     if out.exists() and any(out.iterdir()): raise FileExistsError(out)
     out.mkdir(parents=True,exist_ok=True)
     records=pch_records(42)
-    if not args.eval_limit:
-        bank=json.loads(Path(args.probe_bank).read_text())
-        if not bank.get('complete') or bank['dataset_sha256']!=manifest(records)['dataset_sha256']:
-            raise ValueError('Knowledge probe bank is incomplete or uses different PCH data')
-    write_json(out/'config.json',{**vars(args),**manifest(records),'protocol':'rebuttal-v2',
+    write_json(out/'config.json',{**vars(args),**manifest(records),'protocol':'pch-v2',
         'pilot':bool(args.eval_limit or args.max_requests!=300),'gate_threshold':.9,
         'request_representation':'raw PCH request text, not evaluation QA',
         'refusal_proxy':'new refusals among initially non-refused queries; not human safety annotations',
@@ -97,10 +92,6 @@ def main():
             write_json(out/'initial_control_evaluations.json',base_results)
             write_json(out/f'responses_stage{stage}.json',details)
             print('CURaTE completed stage',stage,flush=True)
-    if not args.eval_limit and args.max_requests==300:
-        targets=[r['index'] for r in records[:300]]
-        write_json(out/'initial_knowledge_probes.json',knowledge_probes(model,tok,args.probe_bank,targets))
-        write_json(out/'knowledge_probes.json',knowledge_probes(model,tok,args.probe_bank,targets,gate))
     write_json(out/'completed.json',{'pilot':bool(args.eval_limit or args.max_requests!=300),
         'requests':args.max_requests,'load_seconds':loaded,'online_seconds':sum(r['seconds'] for r in processing),
         'wall_seconds_main':time.perf_counter()-wall_start,

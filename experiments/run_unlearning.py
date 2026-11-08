@@ -22,7 +22,7 @@ from experiments.filtering import BatchedFiltering
 from experiments.qwen35_common import (
     decoder, encode, load_model, load_tokenizer, manifest, pch_records, seed_all, write_json, attention_backend,
 )
-from experiments.rebuttal_metrics import GENERATION_BATCH_SIZE, evaluate, relative_quality
+from experiments.metrics import GENERATION_BATCH_SIZE, evaluate, relative_quality
 
 
 @contextmanager
@@ -130,7 +130,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--method", choices=["FIT", "NPO_KL", "RL", "ALKN", "O3"], required=True)
-    parser.add_argument("--filter", action="store_true")
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=42)
@@ -152,7 +151,6 @@ def main():
                         help="JSON with initial/retain forget/retain raw quality for legacy interpolation")
     parser.add_argument("--save_model", action="store_true")
     parser.add_argument("--behavioral_baseline",help="Frozen-backbone responses from the CURaTE control run")
-    parser.add_argument("--probe_bank",help="Run the shared paraphrase/prompt knowledge probes after request 300")
     args = parser.parse_args()
     torch.set_num_threads(8)
     if not (1 <= args.max_requests <= 300 and args.eval_every >= 1
@@ -165,12 +163,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     seed_all(args.seed)
     records = pch_records(args.seed)
-    if args.probe_bank:
-        bank=json.loads(Path(args.probe_bank).read_text())
-        if not bank.get('complete') or bank['dataset_sha256']!=manifest(records)['dataset_sha256']:
-            raise ValueError('Knowledge probe bank is incomplete or uses different PCH data')
-    metadata = {**vars(args), **manifest(records), "protocol": "rebuttal-v2",
-                "filter_enabled":bool(args.filter or args.method=='FIT'),
+    metadata = {**vars(args), **manifest(records), "protocol": "pch-v2",
+                "filter_enabled":args.method=='FIT',
                 "layer_attribution_enabled":args.method=='FIT',
                 "importance_routing_enabled":args.method=='FIT',
                 "filter_chunk_size_characters":8,
@@ -233,7 +227,7 @@ def main():
                                        pad_token_id=tokenizer.pad_token_id)
         memory = Unlearn_request_memory()
         filtering = None
-        if args.filter or args.method == "FIT":
+        if args.method == "FIT":
             filtering = BatchedFiltering(similarity_threshold=args.similarity_threshold,
                                        chunk_size=8, device=args.device,
                                        epsilon=args.epsilon, language_model=model,
@@ -359,11 +353,6 @@ def main():
                     stage[label] = relative_quality(stage[key]["quality"], a+(b-a)*fraction)
             stages.append(stage)
             write_json(out / "evaluations.json", stages)
-    if args.probe_bank and args.max_requests==300 and not args.eval_limit:
-        from experiments.behavioral import knowledge_probes
-        with timed(timers,'knowledge_probes',args.device):
-            probes=knowledge_probes(model,tokenizer,args.probe_bank,[r['index'] for r in records[:300]])
-        write_json(out/'knowledge_probes.json',probes)
     if args.save_model:
         model.save_pretrained(out / "model")
         tokenizer.save_pretrained(out / "model")

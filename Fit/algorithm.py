@@ -13,7 +13,6 @@ from datasets import load_dataset
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import _LRScheduler
 import lm_eval
-import random
 import matplotlib.pyplot as plt
 import json
 from Unlearning_algorithm.GA import Gradient_ascent 
@@ -198,47 +197,6 @@ class FineTuning:
 
         print("[FineTuning] Fine-tuning complete.")
 
-    def random_run_finetuning(self, retain_set: list[str], forget_data: str, epochs: int = 20, chunk_size: int = 4096):
-        """
-        Fine-tune the model on the selected layers.
-
-        Args:
-            retain_set: Retain dataset (list of texts)
-            forget_data: Forget dataset (text to be unlearned)
-            epochs: Number of training epochs
-            chunk_size: Size of each training chunk
-        """
-        self.model.train()
-
-        optimizer = AdamW(self.model.parameters(), lr=self.lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1)
-
-        data_length = len(forget_data)
-        num_chunks = math.ceil(data_length / chunk_size)
-        total_steps = epochs * num_chunks
-        warmup_steps = int(0.1 * total_steps)
-
-        scheduler = CosineAnnealingWithWarmupLR(
-            optimizer,
-            num_warmup_steps=warmup_steps,
-            num_training_steps=total_steps,
-            eta_min=0.1
-        )
-        unlearning_algorithms_list = ["GA", "GA_GD", "GA_KL", "NPO_KL", "RL", "NPO"]
-        unlearning_algorithm = random.choice(unlearning_algorithms_list)
-        if unlearning_algorithm == "GA":
-            Gradient_ascent(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "GA_GD":
-            Gradient_ascent_descent(self.model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "GA_KL":
-            Gradient_ascent_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "NPO_KL":
-            NPO_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "RL":
-            Random_label(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "NPO":
-            NPO(self.model, self.infer_model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
-
-        print("[FineTuning] Fine-tuning complete.")
 
 class Baselines_FineTuning:
     def __init__(self, model, infer_model, tokenizer, lr=1e-6, device='cuda'):

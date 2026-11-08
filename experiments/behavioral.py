@@ -1,9 +1,7 @@
 """Shared response-level leakage/refusal proxies and actual online latency."""
 import collections
-import json
 import re
 import time
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -25,8 +23,6 @@ def token_f1(answer, generated):
     return 2*overlap/(len(a)+len(b)) if a and b else 0.
 
 
-def extracts(answer,generated):
-    return exact_answer(answer,generated) or token_f1(answer,generated)>=.8
 
 
 def refuses(text):
@@ -112,42 +108,3 @@ def stage_responses(model,tokenizer,records,stage,baseline,gate=None):
     return result,[{'index':r['index'],'answer':a,'gold':r['answer'],
                     'gate_blocked':bool(blocked[i]) if blocked is not None else None}
                    for i,(r,a) in enumerate(zip(records,answers))]
-
-
-def knowledge_probes(model,tokenizer,bank_path,indices,gate=None):
-    bank=json.loads(Path(bank_path).read_text())
-    rows=[r for r in bank['records'] if r['index'] in set(indices)]
-    prompts,lookup=[],[]
-    for row in rows:
-        variants=[('original',row['question']),('direct_instruction','Answer the following question directly.\n'+row['question']),
-                  ('completion','Question: '+row['question']+'\nAnswer:')]
-        if row['automatic_format_check']:
-            variants.extend([('paraphrase',row['paraphrase']),
-                             ('paraphrase_completion','Question: '+row['paraphrase']+'\nAnswer:')])
-        for kind,prompt in variants:
-            prompts.append(prompt); lookup.append((row,kind))
-    if gate is None:
-        answers=generate_answers(model,tokenizer,prompts)
-    else:
-        blocked=[gate(p) for p in prompts]
-        allowed=[i for i,b in enumerate(blocked) if not b]
-        generated=generate_answers(model,tokenizer,[prompts[i] for i in allowed])
-        answers=['That eludes my understanding.']*len(prompts)
-        for i,answer in zip(allowed,generated): answers[i]=answer
-    details=[]
-    for (row,kind),answer in zip(lookup,answers):
-        f1=token_f1(row['answer'],answer)
-        exact=exact_answer(row['answer'],answer)
-        details.append({'index':row['index'],'variant':kind,'answer':answer,'exact_leak':exact,
-                        'token_f1':f1,'extracted_f1_ge_080':f1>=.8,'extracted':exact or f1>=.8})
-    summary={}
-    for kind in sorted(set(r['variant'] for r in details)):
-        selected=[r for r in details if r['variant']==kind]
-        summary[kind]={'n':len(selected),'exact_rate':float(np.mean([r['exact_leak'] for r in selected])),
-                       'extraction_rate':float(np.mean([r['extracted'] for r in selected]))}
-    successful={r['index'] for r in details if r['extracted']}
-    return {'n_targets':len(rows),'any_prompt_extraction_rate':len(successful)/max(1,len(rows)),
-            'extracted_indices':sorted(successful),'by_variant':summary,'details':details,
-            'extraction_rule':'normalized full answer at word/number boundaries OR token F1 >= 0.8',
-            'limitations':['Boundary-aware answer match OR F1 >= 0.8 is a lexical extraction proxy, not a semantic guarantee',
-                           'Paraphrases passed automatic format checks but are not human reviewed']}

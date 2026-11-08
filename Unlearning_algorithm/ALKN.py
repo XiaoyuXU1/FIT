@@ -1,6 +1,6 @@
 """Legacy ALKN variant, missing task-vector negation.
 
-For the supplementary paper reimplementation use experiments/alkn.py.
+For the PCH paper reimplementation use experiments/alkn.py.
 """
 import torch
 import math

@@ -1,4 +1,4 @@
-"""Shared data ordering and model loading for the supplementary experiments."""
+"""Shared data ordering and model loading for continual PCH unlearning."""
 import hashlib
 import json
 import random

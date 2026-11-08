@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import torch
 from transformers import BatchEncoding
 
-from experiments.run_rebuttal import importance, select_layers, train_request
-from experiments.rebuttal_metrics import evaluate
+from experiments.run_unlearning import importance, select_layers, train_request
+from experiments.metrics import evaluate
 
 
 class Tokenizer:
@@ -56,7 +56,7 @@ class TinyModel(torch.nn.Module):
         return torch.cat([input_ids, torch.tensor([[3, 4]]).expand(len(input_ids), -1)], dim=1)
 
 
-class RebuttalTests(unittest.TestCase):
+class UnlearningTests(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(42)
         self.model = TinyModel()
@@ -219,23 +219,47 @@ class RebuttalTests(unittest.TestCase):
                               min_new_tokens=4,do_sample=False,use_cache=True)
         self.assertTrue(torch.equal(actual,torch.cat(expected)))
 
-    def test_verbose_answer_still_counts_as_knowledge_extraction(self):
-        from experiments.behavioral import extracts,token_f1
+    def test_verbose_answer_still_counts_as_target_leakage(self):
+        from experiments.behavioral import exact_answer,token_f1
         answer='Liam Ember'
         generated='Liam Ember '+('additional unrelated continuation '*30)
         self.assertLess(token_f1(answer,generated),.8)
-        self.assertTrue(extracts(answer,generated))
+        self.assertTrue(exact_answer(answer,generated))
+
+    def test_curate_runner_writes_requests_without_auxiliary_files(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from experiments import run_curate
+        rows=[{'index':i,'text':f'text {i}','question':f'question {i}',
+               'answer':'answer'} for i in range(3)]
+        embedder=SimpleNamespace(encode=lambda texts,**kw:torch.tensor([[1.,0.]]))
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory)/'CURaTE'
+            with (patch('sys.argv',['run_curate','--model','test','--embedder','test',
+                    '--output',str(output),'--max_requests','2','--eval_limit','1']),
+                  patch.object(run_curate,'pch_records',return_value=rows),
+                  patch.object(run_curate,'load_model',return_value=self.model),
+                  patch.object(run_curate,'load_tokenizer',return_value=self.tokenizer),
+                  patch.object(run_curate,'SentenceTransformer',return_value=embedder),
+                  patch.object(run_curate,'generate_answers',side_effect=lambda m,t,qs:['answer']*len(qs)),
+                  patch.object(run_curate,'stage_responses',return_value=({},[])),
+                  patch.object(run_curate,'measure_latency',return_value={}),
+                  patch.object(torch.cuda,'synchronize'),
+                  patch.object(torch.cuda,'max_memory_allocated',return_value=0)):
+                run_curate.main()
+            requests=[json.loads(s) for s in (output/'requests.jsonl').read_text().splitlines()]
+            self.assertEqual([r['database_entries'] for r in requests],[1,2])
+            self.assertEqual(json.loads((output/'completed.json').read_text())['requests'],2)
 
     def test_answer_match_rejects_part_of_a_longer_word_or_number(self):
-        from experiments.behavioral import exact_answer,extracts
-        from experiments.summarize import exact_answer as report_match
+        from experiments.behavioral import exact_answer
         for answer,response,expected in [('62','The value is 16285680.',False),
                                          ('Ann','Annual report',False),
                                          ('62','The value is 62.',True),
                                          ('Liam Ember','Liam Ember: more details.',True)]:
             self.assertEqual(exact_answer(answer,response),expected)
-            self.assertEqual(report_match(answer,response),expected)
-        self.assertFalse(extracts('62','The value is 16285680.'))
 
 
 if __name__ == "__main__":

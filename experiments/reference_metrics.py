@@ -5,7 +5,7 @@ import gc
 import torch
 
 from experiments.qwen35_common import load_model, load_tokenizer, manifest, pch_records, write_json
-from experiments.rebuttal_metrics import GENERATION_BATCH_SIZE, evaluate
+from experiments.metrics import GENERATION_BATCH_SIZE, evaluate
 
 
 def main():
@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
     records = pch_records(args.seed)
-    result = {"protocol": "rebuttal-v2", "metric_generation_batch_size":GENERATION_BATCH_SIZE, **manifest(records)}
+    result = {"protocol": "pch-v2", "metric_generation_batch_size":GENERATION_BATCH_SIZE, **manifest(records)}
     for label, name in (("initial", args.initial), ("retain", args.retain)):
         model = load_model(name, args.device).eval()
         tokenizer = load_tokenizer(name)
