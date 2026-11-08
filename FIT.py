@@ -12,7 +12,6 @@ import math
 from datasets import load_dataset
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import _LRScheduler
-import lm_eval
 import random
 import matplotlib.pyplot as plt
 import json
@@ -116,13 +115,13 @@ def compute_forget_retain_Q(
         retain_model_name,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
-        use_flash_attention_2= True,
+        attn_implementation="sdpa",
     ).to(device)
     unlearning_model = AutoModelForCausalLM.from_pretrained(
         unlearning_model_name,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
-        use_flash_attention_2= True,
+        attn_implementation="sdpa",
     ).to(device)
     retain_model.eval()
     unlearning_model.eval()
@@ -174,13 +173,13 @@ class UnlearningPipeline:
         self.target_model = AutoModelForCausalLM.from_pretrained(target_name,       
                                                                 torch_dtype=torch.bfloat16,
                                                                 trust_remote_code= True,
-                                                                use_flash_attention_2= True,
+                                                                attn_implementation="sdpa",
                                                                 device_map="auto"
                                                             )
         self.infer_model=AutoModelForCausalLM.from_pretrained(target_name,       
                                                                 torch_dtype=torch.bfloat16,
                                                                 trust_remote_code= True,
-                                                                use_flash_attention_2= True,
+                                                                attn_implementation="sdpa",
                                                             )                                             
         # self.infer_model.to(self.device)
         self.infer_model.to(self.target_model.device)

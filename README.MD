@@ -27,17 +27,23 @@ The class name `FineTuning` in the original code denotes unlearning updates.
 Use Python 3.10 or later and install a CUDA-compatible PyTorch 2.6.0 build, then:
 
 ```bash
-python -m pip install -r requirements-qwen35.txt
+python -m pip install -r requirements.txt
 python -m unittest experiments.test_unlearning -v
 ```
 
 Run commands from the repository root. `scripts/python_qwen35.sh` uses `python`
 from the active environment; set `PYTHON` to choose another interpreter.
-Optional native Qwen kernels are pinned in `requirements-qwen35-kernels.txt`.
-Install them after PyTorch with `--no-build-isolation`, using a compatible CUDA
-toolkit and compiler. The recorded convolution build used CUDA 12.6 and PyTorch
-2.6.0+cu124; build against your installed PyTorch ABI. Runtime metadata records
-the actual attention backend, including any fallback.
+Optional native Qwen kernels are listed as comments in `requirements.txt` because
+they require PyTorch and a compatible CUDA toolkit/compiler before building:
+
+```bash
+python -m pip install --no-build-isolation \
+  fla-core==0.3.2 flash-linear-attention==0.3.2 causal-conv1d==1.5.3.post1
+```
+
+The recorded convolution build used CUDA 12.6 and PyTorch 2.6.0+cu124; build
+against your installed PyTorch ABI. Without these optional extensions, the runtime
+uses its fallback. Runtime metadata records the actual backend.
 
 ## Main experiment
 
@@ -68,8 +74,8 @@ see the [experiment guide](experiments/README.md).
 
 ## Original entry points
 
-The original scripts use the separate `requirements.txt` runtime: PyTorch 2.2.0,
-CUDA 11.8, Transformers 4.46.2, and FlashAttention 2.5.3.
+The original entry points use the same `requirements.txt` environment and SDPA
+attention. Their original evaluation definitions are preserved.
 
 ```bash
 python FIT.py --unlearning_model_name FITPCH/Llama-3-8B_PCH_finetune \

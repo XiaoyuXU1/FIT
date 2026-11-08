@@ -1,5 +1,4 @@
 import os
-import lm_eval
 import random
 import matplotlib.pyplot as plt
 import json

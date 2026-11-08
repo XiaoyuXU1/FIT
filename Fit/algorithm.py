@@ -12,7 +12,6 @@ import math
 from datasets import load_dataset
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import _LRScheduler
-import lm_eval
 import matplotlib.pyplot as plt
 import json
 from Unlearning_algorithm.GA import Gradient_ascent 
