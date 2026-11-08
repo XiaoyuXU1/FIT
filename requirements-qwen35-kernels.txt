@@ -1,0 +1,5 @@
+# Install after the core runtime, with --no-build-isolation.
+# Requires a CUDA toolkit and a compiler compatible with the installed torch ABI.
+fla-core==0.3.2
+flash-linear-attention==0.3.2
+causal-conv1d==1.5.3.post1

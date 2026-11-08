@@ -34,7 +34,7 @@ def cubic_root(x):
 
 def log_results(log_file, user_id, FD, RQ):
     log_file = Path(log_file)
-    log_file.parent.mkdir(parents=True, exist_ok=True)  # 
+    log_file.parent.mkdir(parents=True, exist_ok=True)  # 关键：创建目录
 
     log_data = {
         "user_id": user_id,
@@ -49,14 +49,17 @@ def log_results(log_file, user_id, FD, RQ):
         with log_file.open("r+", encoding="utf-8") as f:
             try:
                 existing_data = json.load(f)
-                if not isinstance(existing_data, list):  #
+                if not isinstance(existing_data, list):  # 防御：不是list就重置
                     existing_data = [existing_data]
             except json.JSONDecodeError:
                 existing_data = []
             existing_data.append(log_data)
             f.seek(0)
-            f.truncate()  # 
+            f.truncate()  # 建议：避免新内容比旧内容短导致尾巴残留
             json.dump(existing_data, f, indent=4, ensure_ascii=False)
+
+def evaluation_points(max_requests, step=60):
+    return list(range(step, max_requests + 1, step))
 
 def Unlearning_Evaluator(model, tokenizer, forget_set, retain_set, forget_question, retain_question, forget_answer, retain_answer, batch_size, max_length, device):
     # Probability
@@ -155,11 +158,15 @@ class UnlearningPipeline:
                  similarity_threshold: float = 0.95,
                  Data_filtering_chunk_size: int = 128,
                  device="cuda:2",
-                 epsilon: float = 0.1
+                 epsilon: float = 0.1,
+                 importance_low_threshold: float = 0.5,
+                 importance_high_threshold: float = 1.0
                  ):
         self.delete_data_list=[]
         self.all_chosen_layers_list=[]
         self.epsilon = epsilon
+        self.importance_low_threshold = importance_low_threshold
+        self.importance_high_threshold = importance_high_threshold
         self.forget_list=forget_data
         # 2) Load Target Model (actually perform unlearning operation) and infer model
         print(f"[UnlearningPipeline] Loading Target Model: {target_name}")
@@ -240,7 +247,16 @@ class UnlearningPipeline:
         chosen_layer_index = self.layer_selector.select_forget_layers(filtered_data,topk_for_forget=topk_for_forget)
         self.all_chosen_layers_list.append(chosen_layer_index)
         # Fine-tuning
-        fine_tuner = FineTuning(self.target_model,self.infer_model,self.target_tokenizer,chosen_layer_index,lr=lr,device=self.target_model.device)
+        fine_tuner = FineTuning(
+            self.target_model,
+            self.infer_model,
+            self.target_tokenizer,
+            chosen_layer_index,
+            lr=lr,
+            device=self.target_model.device,
+            importance_low_threshold=self.importance_low_threshold,
+            importance_high_threshold=self.importance_high_threshold,
+        )
         fine_tuner.run_finetuning(x_retain , filtered_data,epochs=epochs,chunk_size=fine_tuning_chunk_size)
         # Store data
         self.request_memory.store_unlearning_data(user_id, filtered_data_embedding)
@@ -252,8 +268,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Unlearning Pipeline Hyperparameters")
     
     # Core hyperparameters
-    parser.add_argument("--unlearning_model_name",type=str,default="", help="unlearning model names")
-    parser.add_argument("--retain_model_name",type=str,default="", help="retain model names")
+    parser.add_argument("--unlearning_model_name",type=str,default="FITPCH/Llama-2-7b-chat-hf_PCH_finetune", help="unlearning model names")
+    parser.add_argument("--retain_model_name",type=str,default="FITPCH/Llama-2-7b-chat-hf_PCH_retain", help="retain model names")
     parser.add_argument("--topk_for_forget", type=float, default=0.25,
                         help="Ratio of top layers to select for forgetting (0 < ratio <= 1), e.g. 0.25 means top 25%% layers")
     parser.add_argument("--similarity_threshold", type=float, default=0.90,
@@ -262,10 +278,21 @@ def parse_args():
                         help="Epsilon threshold for Data_filtering")
     parser.add_argument("--device", type=str, default="cuda:2",
                         help="Device to use for training (e.g., 'cuda:0' or 'cpu')")
+    parser.add_argument("--importance_low_threshold", type=float, default=0.5,
+                        help="Lower IMP bin boundary: score below this uses RL")
+    parser.add_argument("--importance_high_threshold", type=float, default=1.0,
+                        help="Upper IMP bin boundary: score at or above this uses NPO_KL")
+    parser.add_argument("--run_tag", type=str, default="",
+                        help="Optional suffix for experiment outputs, e.g. imp_low_shift")
+    parser.add_argument("--max_requests", type=int, default=300,
+                        help="Number of PCH requests to process")
+    parser.add_argument("--skip_save_model", action="store_true",
+                        help="Skip saving final model weights for compact sensitivity runs")
     return parser.parse_args()
 
 # ====================== Test Example ======================
 if __name__ == "__main__":
+    args = parse_args()
     # Set random seed (ensure reproducibility)
     PCH_file_path = 'FITPCH/PCH'  # Forget set
     PCH_QA_path="FITPCH/PCH_QA"
@@ -280,13 +307,17 @@ if __name__ == "__main__":
     max_length = 128  # Maximum length for computing p_output
     fine_tuning_chunk_size = 256  # Chunk size for fine-tuning
     Data_filtering_chunk_size = 8 # Chunk size for Data_filtering 
-    args = parse_args()
     topk_for_forget = args.topk_for_forget # Ratio of top layers to select
     similarity_threshold = args.similarity_threshold  # Similarity threshold for Data_filtering
     device = args.device  # Device to use for training
     epsilon = args.epsilon  # Epsilon for Data_filtering
+    max_requests = args.max_requests
+    eval_points = evaluation_points(max_requests)
     Unlearning_model_name=args.unlearning_model_name
     retain_model_name=args.retain_model_name
+    run_tag = f"_{args.run_tag}" if args.run_tag else ""
+    if max_requests < 60 or max_requests > 300:
+        raise ValueError("--max_requests must be between 60 and 300 for this PCH setup")
     # Compute FQ and RQ curves
     Forget_Q_list,Retain_Q_list=compute_forget_retain_Q(Unlearning_model_name, retain_model_name, Pch[0:300], Pch[300:], Pch_Q[0:300],Pch_Q[300:], Pch_A[0:300], Pch_A[300:], batch_size, max_length)
     Unlearning_model_file_name=Unlearning_model_name.replace("/", "_")
@@ -306,13 +337,14 @@ if __name__ == "__main__":
             similarity_threshold=similarity_threshold,
             Data_filtering_chunk_size=Data_filtering_chunk_size,
             device=device,  # Use "cuda" if GPU is available
-            epsilon=epsilon
+            epsilon=epsilon,
+            importance_low_threshold=args.importance_low_threshold,
+            importance_high_threshold=args.importance_high_threshold
         )
-        log_result_path=f"Experiment_record/continuous/{Unlearning_model_file_name}/seed{seed_list[m]}_evaluations_all.json"
-        for i in range(300):
+        for i in range(max_requests):
             user_id="User"+str(i)
             model,tokenizer,all_chosen_layers_list,delete_list= pipeline.unlearning_request_handler(user_id, Pch[i], Pch[i+1:], topk_for_forget, fine_tuning_chunk_size, lr, epochs)
-            if (i+1) % 60 == 0:
+            if (i+1) in eval_points:
                 #Calculate F and R
                 Forget,Retain = Unlearning_Evaluator(model, tokenizer, Pch[0:i+1], Pch[i+1:], Pch_Q[0:i+1], Pch_Q[i+1:], Pch_A[0:i+1], Pch_A[i+1:], batch_size, max_length, device)
                 Forget_list.append(Forget)
@@ -320,10 +352,10 @@ if __name__ == "__main__":
         print("Forget_list:", Forget_list)
         print("Retain_list:", Retain_list)
         #Calculate FQ and RQ
-        User_id=[60,120,180,240,300]
-        FD_list=FD_RQ_calculate(Forget_list,Forget_Q_list)
-        RQ_list=FD_RQ_calculate(Retain_list,Retain_Q_list)
-        log_result_path=f"Experiment_record/{Unlearning_model_file_name}/seed{seed_list[m]}_evaluations_all.json"
+        User_id=eval_points
+        FD_list=FD_RQ_calculate(Forget_list,Forget_Q_list[:len(eval_points)])
+        RQ_list=FD_RQ_calculate(Retain_list,Retain_Q_list[:len(eval_points)])
+        log_result_path=f"Experiment_record/{Unlearning_model_file_name}/seed{seed_list[m]}{run_tag}_evaluations_all.json"
         # Log results for FD and RQ for each 60 users
         for idx in range(len(User_id)):
             log_results(
@@ -333,14 +365,15 @@ if __name__ == "__main__":
                 RQ=RQ_list[idx]
             )
         # # Save model weights
-        filter_comparison_path = Path(f"Experiment_record/{Unlearning_model_file_name}/seed{seed_list[m]}_filter_comparison.json")
+        filter_comparison_path = Path(f"Experiment_record/{Unlearning_model_file_name}/seed{seed_list[m]}{run_tag}_filter_comparison.json")
         filter_comparison_path.parent.mkdir(parents=True, exist_ok=True)
         with filter_comparison_path.open("w", encoding="utf-8") as f:
             json.dump(delete_list, f, ensure_ascii=False, indent=4)
-        model_save_path = Path(f"Model/{Unlearning_model_file_name}/seed{seed_list[m]}")
-        model_save_path.mkdir(parents=True, exist_ok=True)
-        model.save_pretrained(model_save_path)
-        tokenizer.save_pretrained(model_save_path)
+        if not args.skip_save_model:
+            model_save_path = Path(f"Model/{Unlearning_model_file_name}/seed{seed_list[m]}{run_tag}")
+            model_save_path.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(model_save_path)
+            tokenizer.save_pretrained(model_save_path)
         del model
         del tokenizer
         # Force garbage collection
@@ -349,7 +382,6 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
         # Clear PyTorch IPC cache
         torch.cuda.ipc_collect()
-
 
 
 
