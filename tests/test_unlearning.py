@@ -7,8 +7,9 @@ from types import SimpleNamespace
 import torch
 from transformers import BatchEncoding
 
-from experiments.run_unlearning import importance, select_layers, train_request
-from experiments.metrics import evaluate
+from Fit.layer import importance,select_layers
+from Unlearning_algorithm.gradient import train_request
+from Evaluations.evaluator import evaluate
 
 
 class Tokenizer:
@@ -63,6 +64,25 @@ class UnlearningTests(unittest.TestCase):
         self.tokenizer = Tokenizer()
         self.args = SimpleNamespace(chunk_size=4, epochs=2, lr=1e-3)
 
+    def test_ga_increases_forget_loss(self):
+        inputs=self.tokenizer('abcd')
+        before=self.model(**inputs,labels=inputs.input_ids).loss.item()
+        self.args.lr=.01
+        train_request(self.model,None,self.tokenizer,'abcd',[], 'GA',self.args,math.inf)
+        self.assertGreater(self.model(**inputs,labels=inputs.input_ids).loss.item(),before)
+
+    def test_ga_retain_variants_keep_reference_fixed(self):
+        for method in ['GA_GD','GA_KL']:
+            model=copy.deepcopy(self.model)
+            reference=copy.deepcopy(model).requires_grad_(False)
+            before=copy.deepcopy(reference.state_dict())
+            n=train_request(model,reference,self.tokenizer,'abcd',
+                            [{'text':'retain'}],method,self.args,math.inf)
+            self.assertEqual(n,2)
+            self.assertTrue(all(torch.isfinite(p).all() for p in model.parameters()))
+            self.assertTrue(all(torch.equal(p,before[k]) for k,p in reference.state_dict().items()))
+            self.assertTrue(all(p.grad is None for p in reference.parameters()))
+
     def test_multichunk_npo_kl_updates_and_keeps_reference_fixed(self):
         reference = copy.deepcopy(self.model).requires_grad_(False)
         before = copy.deepcopy(reference.state_dict())
@@ -93,14 +113,14 @@ class UnlearningTests(unittest.TestCase):
         self.assertEqual(result["rougeL"], 1.0)
 
     def test_alkn_zero_step_size_preserves_weights_exactly(self):
-        from experiments.alkn import ALKN
+        from Unlearning_algorithm.ALKN import ALKN
         before=copy.deepcopy(self.model.state_dict())
         self.args.lr=0.
         ALKN().run(self.model,self.tokenizer,'abcdefgh',[{'text':'retain'}],self.args,math.inf)
         self.assertTrue(all(torch.equal(p,before[k]) for k,p in self.model.state_dict().items()))
 
     def test_alkn_task_vector_negation_increases_target_loss(self):
-        from experiments.alkn import ALKN
+        from Unlearning_algorithm.ALKN import ALKN
         inputs=self.tokenizer('abcdefgh')
         before=self.model(**inputs,labels=inputs.input_ids).loss.item()
         self.args.lr=.01
@@ -109,7 +129,7 @@ class UnlearningTests(unittest.TestCase):
         self.assertGreater(after,before)
 
     def test_o3_latest_adapter_matches_training_and_zero_gate_restores_base(self):
-        from experiments.o3 import OrthogonalLinear
+        from Unlearning_algorithm.O3 import OrthogonalLinear
         layer=OrthogonalLinear(torch.nn.Linear(4,4,bias=False)).eval()
         inputs=torch.randn(2,4)
         base=layer(inputs).detach()
@@ -123,7 +143,7 @@ class UnlearningTests(unittest.TestCase):
 
     def test_batched_filter_preserves_duplicate_and_empty_filter_decisions(self):
         from Fit.filtering import Data_filtering
-        from experiments.filtering import BatchedFiltering
+        from Fit.filtering import BatchedFiltering
         class Original(Data_filtering):
             def __init__(self,epsilon):
                 self.chunk_size=4; self.device='cpu'; self.similarity_threshold=.9; self.epsilon=epsilon
@@ -143,7 +163,7 @@ class UnlearningTests(unittest.TestCase):
                 self.assertEqual(len(old[2]),len(new[2]))
 
     def test_o3_batch_preserves_distinct_query_gates_and_bias(self):
-        from experiments.o3 import OrthogonalLinear
+        from Unlearning_algorithm.O3 import OrthogonalLinear
         layer=OrthogonalLinear(torch.nn.Linear(4,5,bias=True)).eval()
         for _ in range(2):
             layer.add_adapter()
@@ -160,7 +180,7 @@ class UnlearningTests(unittest.TestCase):
         self.assertTrue(torch.equal(layer(inputs),layer.base(inputs)))
 
     def test_o3_resumes_latest_adapter_and_does_not_sum_task_deltas(self):
-        from experiments.o3 import OrthogonalLinear
+        from Unlearning_algorithm.O3 import OrthogonalLinear
         layer=OrthogonalLinear(torch.nn.Linear(4,5,bias=False)).eval()
         layer.add_adapter()
         with torch.no_grad(): layer.b[-1].fill_(.1)
@@ -185,7 +205,7 @@ class UnlearningTests(unittest.TestCase):
     def test_o3_scienceqa_gate_remapping(self):
         import numpy as np
         from scipy.special import ndtr,expit
-        from experiments.o3 import inference_weights
+        from Unlearning_algorithm.O3 import inference_weights
         x=np.array([0.,1.,1.5,2.,100.])
         first,second=ndtr(x),ndtr(-x)
         raw=expit(10*(1-np.maximum(first,second)+np.minimum(first,second))-2)
@@ -194,7 +214,7 @@ class UnlearningTests(unittest.TestCase):
 
     def test_o3_query_batch_cached_decoding_matches_individual_queries(self):
         from transformers import LlamaConfig,LlamaForCausalLM
-        from experiments.o3 import OrthogonalLinear
+        from Unlearning_algorithm.O3 import OrthogonalLinear
         model=LlamaForCausalLM(LlamaConfig(vocab_size=32,hidden_size=16,
             intermediate_size=32,num_hidden_layers=2,num_attention_heads=2,
             num_key_value_heads=2,pad_token_id=0,eos_token_id=2)).eval()
@@ -220,7 +240,7 @@ class UnlearningTests(unittest.TestCase):
         self.assertTrue(torch.equal(actual,torch.cat(expected)))
 
     def test_verbose_answer_still_counts_as_target_leakage(self):
-        from experiments.behavioral import exact_answer,token_f1
+        from Evaluations.evaluator import exact_answer,token_f1
         answer='Liam Ember'
         generated='Liam Ember '+('additional unrelated continuation '*30)
         self.assertLess(token_f1(answer,generated),.8)
@@ -231,15 +251,15 @@ class UnlearningTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from experiments import run_curate
+        from Unlearning_algorithm import CURaTE as run_curate
         rows=[{'index':i,'text':f'text {i}','question':f'question {i}',
                'answer':'answer'} for i in range(3)]
         embedder=SimpleNamespace(encode=lambda texts,**kw:torch.tensor([[1.,0.]]))
         with tempfile.TemporaryDirectory() as directory:
             output=Path(directory)/'CURaTE'
-            with (patch('sys.argv',['run_curate','--model','test','--embedder','test',
-                    '--output',str(output),'--max_requests','2','--eval_limit','1']),
-                  patch.object(run_curate,'pch_records',return_value=rows),
+            args=SimpleNamespace(model="test",embedder="test",output=str(output),
+                max_requests=2,eval_limit=1,eval_every=60,seed=42,device="cpu")
+            with (patch.object(run_curate,'pch_records',return_value=rows),
                   patch.object(run_curate,'load_model',return_value=self.model),
                   patch.object(run_curate,'load_tokenizer',return_value=self.tokenizer),
                   patch.object(run_curate,'SentenceTransformer',return_value=embedder),
@@ -248,13 +268,13 @@ class UnlearningTests(unittest.TestCase):
                   patch.object(run_curate,'measure_latency',return_value={}),
                   patch.object(torch.cuda,'synchronize'),
                   patch.object(torch.cuda,'max_memory_allocated',return_value=0)):
-                run_curate.main()
+                run_curate.run(args)
             requests=[json.loads(s) for s in (output/'requests.jsonl').read_text().splitlines()]
             self.assertEqual([r['database_entries'] for r in requests],[1,2])
             self.assertEqual(json.loads((output/'completed.json').read_text())['requests'],2)
 
     def test_answer_match_rejects_part_of_a_longer_word_or_number(self):
-        from experiments.behavioral import exact_answer
+        from Evaluations.evaluator import exact_answer
         for answer,response,expected in [('62','The value is 16285680.',False),
                                          ('Ann','Annual report',False),
                                          ('62','The value is 62.',True),

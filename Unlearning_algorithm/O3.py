@@ -5,8 +5,9 @@ PCH request paragraphs are split into overlapping 128-character OOD examples.
 This adaptation is recorded separately from the author's original benchmarks.
 """
 import importlib.util
+import hashlib
+import urllib.request
 import math
-import random
 import time
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from sklearn.covariance import EmpiricalCovariance
 from threadpoolctl import threadpool_limits
 from transformers import AutoTokenizer
 
-from experiments.qwen35_common import encode
+from utils import encode
 
 
 class OrthogonalLinear(torch.nn.Module):
@@ -87,6 +88,19 @@ def inference_weights(first, second):
     return np.where(raw>.9,1.2,np.where((raw>.3)&(raw<=.4),raw,0.))
 
 
+def detector_source():
+    target=Path(__file__).resolve().parents[1]/'.cache/o3-source/ood_model_selector.py'
+    revision='839afea7fc09001433ef30bd6670a6d6804a9045'
+    url=f'https://raw.githubusercontent.com/GCYZSL/O3-LLM-UNLEARNING/{revision}/ScienceQA_expriment/src/ood_model_selector.py'
+    data=target.read_bytes() if target.exists() else urllib.request.urlopen(url,timeout=60).read()
+    if hashlib.sha256(data).hexdigest()!='08ed1cf87eb3f9d4d8737a2c6d5c6f5da27c94e4aae98d16ae248a7409ce65fd':
+        raise ValueError('O³ author detector checksum mismatch')
+    if not target.exists():
+        target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(data)
+    return target
+
+
 class O3:
     def __init__(self, model, device):
         self.model,self.device=model,device
@@ -100,7 +114,7 @@ class O3:
                 setattr(parent,attr,wrapped)
                 self.layers.append(wrapped)
         if not self.layers: raise ValueError('No decoder linear modules found for O³')
-        source=Path('.cache/o3-source/ood_model_selector.py')
+        source=detector_source()
         spec=importlib.util.spec_from_file_location('o3_author_detector',source)
         module=importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

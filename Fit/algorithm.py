@@ -1,261 +1,284 @@
+"""Shared continual-unlearning pipeline for FIT and fixed baselines."""
+import argparse
 import gc
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-import numpy as np
-from typing import List, Dict, Any, Union
-from sentence_transformers import util
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel
-import hashlib
-import math
-from datasets import load_dataset
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import _LRScheduler
-import matplotlib.pyplot as plt
 import json
-from Unlearning_algorithm.GA import Gradient_ascent 
-from Unlearning_algorithm.RL import Random_label
-from Unlearning_algorithm.NPO_KL import NPO_KL
-from Unlearning_algorithm.GA_GD import Gradient_ascent_descent
-from Unlearning_algorithm.GA_KL import Gradient_ascent_KL 
-from Unlearning_algorithm.NPO import NPO
-from Unlearning_algorithm.ALKN import ALKN
-from Unlearning_algorithm.PISCES import Pisces
-from collections import Counter
+import math
 import os
-from typing import List, Dict, Any, Optional, Callable, Union
+import resource
 import time
-from cycler import cycler
-TensorLike = Union[torch.Tensor, List[torch.Tensor]]
-# Define a custom learning rate scheduler
-class CosineAnnealingWithWarmupLR(_LRScheduler):
-    def __init__(self, optimizer, num_warmup_steps, num_training_steps, eta_min=0.0, last_epoch=-1):
-        self.num_warmup_steps = num_warmup_steps
-        self.num_training_steps = num_training_steps
-        self.eta_min = eta_min
-        super(CosineAnnealingWithWarmupLR, self).__init__(optimizer, last_epoch)
-    
-    def get_lr(self):
-        current_step = max(0, self.last_epoch)
-        if current_step < self.num_warmup_steps:
-            # Warm-up phase
-            lr_scale = float(current_step) / float(max(1, self.num_warmup_steps))
-        else:
-            # Cosine annealing phase
-            progress = float(current_step - self.num_warmup_steps) / float(max(1, self.num_training_steps - self.num_warmup_steps))
-            cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
-            lr_scale = (1 - self.eta_min) * cosine_decay + self.eta_min
+from importlib.metadata import version
+from contextlib import contextmanager
+from pathlib import Path
 
-        return [base_lr * lr_scale for base_lr in self.base_lrs]
-    
-# Unlearning algorithm selection
-def compute_importance(text, model, tokenizer):
-    # Encode the text into token ids
-    input_ids = tokenizer.encode(text, return_tensors='pt').to(model.device)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF","expandable_segments:True")
+os.environ.setdefault("TOKENIZERS_PARALLELISM","false")
 
-    # Obtain embeddings and enable gradient tracking
-    with torch.no_grad():
-        # Important: create a gradient-tracked copy outside no_grad
-        embeddings = model.model.embed_tokens(input_ids)
-    embeddings = embeddings.detach().clone().requires_grad_(True)
+import torch
 
-    # Forward pass using inputs_embeds, specify labels to compute language model loss
-    outputs = model(
-        inputs_embeds=embeddings,
-        labels=input_ids,
-        use_cache=False  # Some models require disabling cache when using inputs_embeds+labels
-    )
-    loss = outputs.loss
-
-    # Backward pass
-    loss.backward()
-
-    # Get gradients and compute norm
-    grad = embeddings.grad
-    importance_score = grad.norm().item()
-
-    # Clear model gradients to avoid affecting subsequent computations
-    model.zero_grad()
-
-    return importance_score
-
-class FineTuning:
-    def __init__(
-        self,
-        model,
-        infer_model,
-        tokenizer,
-        selected_layers,
-        lr=1e-6,
-        device='cuda',
-        importance_low_threshold=0.5,
-        importance_high_threshold=1.0,
-    ):
-        """
-        Args:
-            model: Pretrained model
-            tokenizer: Tokenizer
-            selected_layers: List of layer indices to unfreeze
-            lr: Learning rate
-            device: Device ('cpu' or 'cuda')
-        """
-        self.selected_layers = selected_layers
-        self.device = model.device
-        # Load pretrained model and tokenizer
-        self.tokenizer = tokenizer
-        self.model = model
-        self.infer_model = infer_model
-        self.importance_low_threshold = importance_low_threshold
-        self.importance_high_threshold = importance_high_threshold
-        if self.importance_low_threshold >= self.importance_high_threshold:
-            raise ValueError(
-                "importance_low_threshold must be lower than importance_high_threshold"
-            )
-        
-        # Freeze all parameters
-        for param in self.model.parameters():
-            param.requires_grad = False
-
-        # Unfreeze selected layers
-        self._unfreeze_selected_layers()
-        # Print unfrozen layers
-        print(f"[FineTuning] Unfrozen layers: {self.selected_layers}")
-        # Prepare optimizer
-        params_to_update = [p for name, p in self.model.named_parameters() if p.requires_grad]
-        self.params_to_update = params_to_update
-        if not params_to_update:
-            raise ValueError("No parameters to optimize")
-        self.lr = lr
-
-    def _unfreeze_selected_layers(self):
-        """
-        Unfreeze the selected layers.
-        """
-        for name, param in self.model.named_parameters():
-            for layer_idx in self.selected_layers:
-                if f"layers.{layer_idx}.mlp" in name:
-                    param.requires_grad = True
-        for name, param in self.model.named_parameters():
-            for layer_idx in self.selected_layers:
-                if f"layers.{layer_idx}.self_attn" in name:
-                    param.requires_grad = True
-
-    def run_finetuning(self, retain_set: list[str], forget_data: str, epochs: int = 20, chunk_size: int = 4096):
-        """
-        Fine-tune the model on the selected layers.
-
-        Args:
-            retain_set: Retain dataset (list of texts)
-            forget_data: Forget dataset (text to be unlearned)
-            epochs: Number of training epochs
-            chunk_size: Size of each training chunk
-        """
-        self.model.train()
-
-        optimizer = AdamW(self.model.parameters(), lr=self.lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1)  
-        
-        data_length = len(forget_data)
-        num_chunks = math.ceil(data_length / chunk_size)
-        total_steps = epochs * num_chunks
-        warmup_steps = int(0.1 * total_steps)
-        
-        scheduler = CosineAnnealingWithWarmupLR(
-            optimizer,
-            num_warmup_steps=warmup_steps,
-            num_training_steps=total_steps,
-            eta_min=0.1
-        )
-        score = compute_importance(forget_data, self.model, self.tokenizer)   #for qwen 0.5-1 scope, for other models 2-6 scope
-        print(f"The importance of data: {score}")
-        if score >= self.importance_high_threshold:
-            unlearning_algorithm = "NPO_KL"
-        elif score >= self.importance_low_threshold:
-            unlearning_algorithm = "NPO"
-        else:
-            unlearning_algorithm = "RL"
-        print(
-            f"{unlearning_algorithm} "
-            f"(IMP bins: <{self.importance_low_threshold}=RL, "
-            f"[{self.importance_low_threshold}, {self.importance_high_threshold})=NPO, "
-            f">={self.importance_high_threshold}=NPO_KL)"
-        )
-
-        if unlearning_algorithm == "GA":
-            Gradient_ascent(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "GA_GD":
-            Gradient_ascent_descent(self.model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "GA_KL":
-            Gradient_ascent_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "NPO_KL":
-            NPO_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "RL":
-            Random_label(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "NPO":
-            NPO(self.model, self.infer_model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
-
-        print("[FineTuning] Fine-tuning complete.")
+from Fit.filtering import Unlearn_request_memory, BatchedFiltering
+from Fit.layer import select_layers,importance
+from Unlearning_algorithm.gradient import train_request
+from utils import (
+    decoder, encode, load_model, load_tokenizer, manifest, pch_records, seed_all, write_json, attention_backend,
+)
+from Evaluations.evaluator import GENERATION_BATCH_SIZE, evaluate, relative_quality
 
 
-class Baselines_FineTuning:
-    def __init__(self, model, infer_model, tokenizer, lr=1e-6, device='cuda'):
-        """
-        Args:
-            model: Pretrained model
-            tokenizer: Tokenizer
-            selected_layers: List of layer indices to unfreeze
-            lr: Learning rate
-            device: Device ('cpu' or 'cuda')
-        """
-        self.device = model.device
-        # Load pretrained model and tokenizer
-        self.tokenizer = tokenizer
-        self.model = model
-        self.infer_model = infer_model
-        self.lr = lr
+@contextmanager
+def timed(timings, name, device):
+    torch.cuda.synchronize(device)
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        torch.cuda.synchronize(device)
+        timings[name] = timings.get(name, 0.0) + time.perf_counter() - started
 
-    def run_baselines_finetuning(self, unlearning_algorithm, retain_set: list[str], forget_data: str, epochs: int = 20, chunk_size: int = 4096, prev_m_vector: Dict[str, torch.Tensor] = None, prev_mask_thr: Dict[str, float] = None):
-        """
-        Fine-tune the model on the selected layers.
 
-        Args:
-            retain_set: Retain dataset (list of texts)
-            forget_data: Forget dataset (text to be unlearned)
-            epochs: Number of training epochs
-            chunk_size: Size of each training chunk
-        """
-        self.model.train()
-
-        optimizer = AdamW(self.model.parameters(), lr=self.lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1)
-
-        data_length = len(forget_data)
-        num_chunks = math.ceil(data_length / chunk_size)
-        total_steps = epochs * num_chunks
-        warmup_steps = int(0.1 * total_steps)
-
-        scheduler = CosineAnnealingWithWarmupLR(
-            optimizer,
-            num_warmup_steps=warmup_steps,
-            num_training_steps=total_steps,
-            eta_min=0.1
-        )
-
-        if unlearning_algorithm == "GA":
-            Gradient_ascent(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "GA_GD":
-            Gradient_ascent_descent(self.model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "GA_KL":
-            Gradient_ascent_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "NPO_KL":
-            NPO_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "RL":
-            Random_label(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm == "NPO":
-            NPO(self.model, self.infer_model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
-        elif unlearning_algorithm=="ALKN":
-            m_vector, mask_thr = ALKN(self.model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.device,prev_m_vector=prev_m_vector, prev_mask_thr=prev_mask_thr)
-            return m_vector, mask_thr
-        elif unlearning_algorithm=="Pisces":
-            Pisces(self.model, self.tokenizer, forget_data, 1, 1, self.device)
-
-        print("[FineTuning] Fine-tuning complete.")
+def main(baseline=False):
+    wall_start=time.perf_counter()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", required=True)
+    methods=['GA','GA_GD','GA_KL','NPO','NPO_KL','RL','ALKN','O3','CURATE'] if baseline else ['FIT']
+    parser.add_argument('--method',choices=methods,required=baseline,default=None if baseline else 'FIT')
+    parser.add_argument('--embedder',help='Trained CURaTE embedding checkpoint')
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max_requests", type=int, default=300)
+    parser.add_argument("--eval_every", type=int, default=60)
+    parser.add_argument("--eval_limit", type=int, default=0,
+                        help="Smoke evaluation only; nonzero marks run as a pilot")
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--lr", type=float, default=5e-6)
+    parser.add_argument("--chunk_size", type=int, default=256)
+    parser.add_argument("--topk", type=float, default=0.25)
+    parser.add_argument("--imp_low", type=float, default=0.5)
+    parser.add_argument("--imp_high", type=float, default=1.0)
+    parser.add_argument("--similarity_threshold", type=float, default=0.9)
+    parser.add_argument("--epsilon", type=float, default=0.2)
+    parser.add_argument("--budget_seconds", type=float, default=0,
+                        help="Online compute budget; all 300 requests still enter evaluation sets")
+    parser.add_argument("--reference_metrics",
+                        help="JSON with initial/retain forget/retain raw quality for endpoint interpolation")
+    parser.add_argument("--save_model", action="store_true")
+    parser.add_argument("--behavioral_baseline",help="Frozen-backbone responses from the CURaTE control run")
+    args = parser.parse_args()
+    torch.set_num_threads(8)
+    if not (1 <= args.max_requests <= 300 and args.eval_every >= 1
+            and args.epochs >= 1 and args.chunk_size >= 2 and 0 < args.topk <= 1
+            and args.imp_low < args.imp_high and args.budget_seconds >= 0):
+        parser.error("Invalid request, update, layer, importance or budget settings")
+    if args.method=='CURATE':
+        if not args.embedder: parser.error('--embedder is required for CURATE')
+        from Unlearning_algorithm.CURaTE import run
+        return run(args)
+    if args.method in ('GA','GA_GD','GA_KL') and args.budget_seconds:
+        parser.error('The GA-family implementations do not support online budgets')
+    out = Path(args.output)
+    if out.exists() and any(out.iterdir()):
+        raise FileExistsError(f"Refusing to overwrite experiment directory: {out}")
+    out.mkdir(parents=True, exist_ok=True)
+    seed_all(args.seed)
+    records = pch_records(args.seed)
+    metadata = {**vars(args), **manifest(records), "protocol": "pch-v2",
+                "filter_enabled":args.method=='FIT',
+                "layer_attribution_enabled":args.method=='FIT',
+                "importance_routing_enabled":args.method=='FIT',
+                "filter_chunk_size_characters":8,
+                "request_seed_policy":"seed + zero-based request position; independent of auxiliary initialization",
+                "versions": {name: version(name) for name in ("torch", "transformers", "accelerate")},
+                "gpu": torch.cuda.get_device_name(args.device),
+                "visible_devices": os.environ.get('CUDA_VISIBLE_DEVICES'),
+                "cuda_allocator":os.environ.get('PYTORCH_CUDA_ALLOC_CONF','native defaults'),
+                "attention_backend": "recorded_after_model_load",
+                "filter_backend": "batched embeddings/cosine and deletion losses; unchanged filtering rule",
+                "kl": "KL(reference || current), mean over causal positions",
+                "generation": "raw question, greedy, answer-only ROUGE, 128 new tokens",
+                "metric_generation_batch_size":GENERATION_BATCH_SIZE,
+                "pilot": bool(args.eval_limit or args.max_requests != 300)}
+    if args.method == 'ALKN':
+        metadata['baseline_implementation']={'type':'paper_reimplementation','source':'https://arxiv.org/html/2611.02620v1',
+            'lambda':.8,'s':10,'low_lr_ratio':.1,'end_active_ratio':.3,
+            'adaptations':['one fixed retain minibatch per request','global quantile interpolation from a fixed uniform 131072-element sample',
+                           'CPU offload of mask/retain-gradient/task-start weights',
+                           'persistent CPU snapshot/gradient/mask buffers and same-dtype D2H staging; unchanged FP32 calculations'],
+            'official_source_status':'linked repository returns 404'}
+    if args.method == 'O3':
+        metadata['baseline_implementation']={'type':'official_detector_and_architecture_port',
+            'source_revision':'839afea7fc09001433ef30bd6670a6d6804a9045',
+            'lora_rank':8,'lora_alpha':16,'lora_lr':3e-4,'lora_epochs':15,'lora_weight_decay':0.,'max_grad_norm':1.,
+            'lora_scheduler':'linear; warmup=min(100,floor(0.1*request_steps))',
+            'inference_gate_profile':'released ScienceQA eval_o3.py piecewise remapping',
+            'covariance':'sklearn EmpiricalCovariance, same CPU centering as official estimator','orthogonal_weight':.1,
+            'adapter_recurrence':'resume latest A/B; previous A snapshots for orthogonality; inference uses latest BA only',
+            'orthogonality_dtype':'float32',
+            'detector':'RoBERTa-base with official MLM+contrastive-entropy loss',
+            'metric_gate_input':'associated PCH question for probability/text accuracy; prompt question for generation; no gold answer',
+            'adaptations':['all decoder linear projections including Qwen linear attention',
+                           '128-character windows / 64-character stride from current paragraph for OOD training',
+                           '64-character / 32-stride fallback for paragraphs with fewer than four long windows',
+                           'random token targets for raw-text PCH unlearning',
+                           '80/20 in-request OOD train/calibration split','maximum gate across request detectors',
+                           'historical B snapshots and dormant FP32 calibration precision matrices stored on CPU; latest adapter remains on GPU',
+                           'batched cached gates; latest low-rank adapter forward only; per-layer orthogonality backward to bound memory; warmup scaled to short requests; microbatch 1']}
+    write_json(out / "config.json", metadata)
+    timers = {}
+    with timed(timers, "load", args.device):
+        model = load_model(args.model, args.device)
+        tokenizer = load_tokenizer(args.model)
+        reference = None
+        if args.method in ("FIT", "NPO", "NPO_KL", "GA_KL"):
+            reference = load_model(args.model, args.device).eval().requires_grad_(False)
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        if 'linear_chunk' in attention_backend(model):
+            with timed(timers,'warmup',args.device):
+                with torch.random.fork_rng(devices=[model.device.index]):
+                    ids=torch.full((1,64),tokenizer.eos_token_id or 0,dtype=torch.long,device=model.device)
+                    model.train()
+                    model(input_ids=ids,labels=ids,use_cache=False).loss.backward()
+                    model.zero_grad(set_to_none=True)
+                    model.eval()
+                    with torch.no_grad():
+                        model.generate(input_ids=ids,attention_mask=torch.ones_like(ids),max_new_tokens=4,
+                                       min_new_tokens=2,do_sample=False,use_cache=True,
+                                       pad_token_id=tokenizer.pad_token_id)
+        memory = Unlearn_request_memory()
+        filtering = None
+        if args.method == "FIT":
+            filtering = BatchedFiltering(similarity_threshold=args.similarity_threshold,
+                                       chunk_size=8, device=args.device,
+                                       epsilon=args.epsilon, language_model=model,
+                                       language_tokenizer=tokenizer)
+        special = None
+        if args.method == 'ALKN':
+            from Unlearning_algorithm.ALKN import ALKN
+            special = ALKN()
+        elif args.method == 'O3':
+            from Unlearning_algorithm.O3 import O3
+            special = O3(model,args.device)
+    timers['load']-=timers.get('warmup',0.)
+    metadata['loaded_model_commit']=getattr(model.config,'_commit_hash',None)
+    metadata['attention_backend']=attention_backend(model)
+    if 'linear_chunk' in metadata['attention_backend']:
+        metadata['versions'].update({n:version(n) for n in ['fla-core','flash-linear-attention','causal-conv1d','triton']})
+        metadata['warmup']='synthetic 64-token forward/backward/decode, RNG restored; excluded from online budget'
+    write_json(out/'config.json',metadata)
+    references = json.loads(Path(args.reference_metrics).read_text()) if args.reference_metrics else None
+    if references and (references.get("dataset_sha256") != metadata["dataset_sha256"]
+                       or references.get("protocol") != metadata["protocol"]):
+        raise ValueError("Reference metrics have a different dataset ordering or metric protocol")
+    if references and references.get('metric_generation_batch_size',GENERATION_BATCH_SIZE)!=GENERATION_BATCH_SIZE:
+        raise ValueError('Reference generation batch size differs from this trial')
+    baseline_answers = None
+    if args.behavioral_baseline:
+        baseline_data=json.loads(Path(args.behavioral_baseline).read_text())
+        if baseline_data['dataset_sha256']!=metadata['dataset_sha256']:
+            raise ValueError('Behavioral baseline uses a different request order')
+        by_index={r['index']:r['answer'] for r in baseline_data['records']}
+        baseline_answers=[by_index[r['index']] for r in records]
+    stages = []
+    online = 0.0
+    peak_online = 0.0
+    peak_evaluation = 0.0
+    torch.cuda.reset_peak_memory_stats(args.device)
+    for index in range(args.max_requests):
+        row = records[index]
+        trace = {"request": index+1, "pch_index": row["index"], "updates": 0,
+                 "algorithm": args.method, "input_chars": len(row["text"])}
+        timings = {}
+        torch.cuda.reset_peak_memory_stats(args.device)
+        torch.cuda.synchronize(args.device)
+        start = time.perf_counter()
+        request_seed=args.seed+index
+        seed_all(request_seed)
+        trace['request_seed']=request_seed
+        deadline = start + max(0, args.budget_seconds-online) if args.budget_seconds else math.inf
+        text = row["text"]
+        embeddings = []
+        if time.perf_counter() < deadline:
+            if filtering is not None:
+                model.eval()
+                with timed(timings, "filter", args.device):
+                    text, deleted, embeddings = filtering.filter_data(
+                        text, [r["data"] for r in memory.retrieve_unlearning_data()])
+                trace["deleted_chars"] = len(deleted)
+            eligible = bool(text) and encode(tokenizer,text,args.device,128) is not None
+            if text and not eligible:
+                trace['skip_reason']='fewer_than_two_tokens_after_filtering'
+            if eligible and time.perf_counter() < deadline:
+                if args.method in ('ALKN','O3'):
+                    with timed(timings, 'update', args.device):
+                        if args.method == 'ALKN':
+                            trace['updates'] = special.run(model,tokenizer,text,records[index+1:],args,deadline)
+                        else:
+                            trace['updates'] = special.run(tokenizer,text,args,deadline)
+                elif args.method == "FIT":
+                    with timed(timings, "attribution", args.device):
+                        layers = select_layers(model, tokenizer, text, args.topk)
+                    model.requires_grad_(False)
+                    for i in layers:
+                        # Include both linear and full attention in Qwen3.5.
+                        for name, p in decoder(model).layers[i].named_parameters():
+                            p.requires_grad_(name.startswith(("mlp.", "self_attn.", "linear_attn.")))
+                    trace["layers"] = layers
+                    with timed(timings, "importance", args.device):
+                        score = importance(model, tokenizer, text)
+                    trace["importance"] = score
+                    trace["algorithm"] = "NPO_KL" if score >= args.imp_high else "NPO" if score >= args.imp_low else "RL"
+                else:
+                    model.requires_grad_(True)
+                if args.method not in ('ALKN','O3'):
+                    with timed(timings, "update", args.device):
+                        trace["updates"] = train_request(model, reference, tokenizer, text,
+                                                         records[index+1:], trace["algorithm"], args, deadline)
+                if trace["updates"]:
+                    memory.store_unlearning_data(index, embeddings)
+        trace["kept_chars"] = len(text)
+        torch.cuda.synchronize(args.device)
+        elapsed = time.perf_counter()-start
+        online += elapsed
+        trace.update(seconds=elapsed, modules=timings, cumulative_online_seconds=online,
+                     peak_allocated_gib=torch.cuda.max_memory_allocated(args.device)/2**30,
+                     peak_reserved_gib=torch.cuda.max_memory_reserved(args.device)/2**30,
+                     budget_exhausted=bool(args.budget_seconds and online >= args.budget_seconds))
+        peak_online = max(peak_online, trace["peak_allocated_gib"])
+        with (out / "requests.jsonl").open("a") as stream:
+            stream.write(json.dumps(trace) + "\n")
+        print(json.dumps(trace), flush=True)
+        if (index+1) % args.eval_every == 0 or index+1 == args.max_requests:
+            model.zero_grad(set_to_none=True)
+            gc.collect()
+            torch.cuda.empty_cache()
+            forget, retain = records[:index+1], records[index+1:]
+            if args.eval_limit:
+                forget, retain = forget[:args.eval_limit], retain[:args.eval_limit]
+            torch.cuda.reset_peak_memory_stats(args.device)
+            eval_batch = GENERATION_BATCH_SIZE
+            with timed(timers, "evaluation", args.device):
+                stage = {"requests": index+1, "forget": evaluate(model, tokenizer, forget, batch_size=eval_batch),
+                         "retain": evaluate(model, tokenizer, retain, batch_size=eval_batch), "online_seconds": online}
+                if baseline_answers is not None and not args.eval_limit:
+                    from Evaluations.evaluator import stage_responses
+                    behavior, details=stage_responses(model,tokenizer,records,index+1,baseline_answers)
+                    stage['behavioral']=behavior
+                    write_json(out/f'responses_stage{index+1}.json',details)
+            peak_evaluation = max(peak_evaluation, torch.cuda.max_memory_allocated(args.device)/2**30)
+            if references:
+                fraction = (index+1)/300
+                for label, key in (("FD", "forget"), ("RU", "retain")):
+                    a, b = references["initial"][key]["quality"], references["retain"][key]["quality"]
+                    stage[label] = relative_quality(stage[key]["quality"], a+(b-a)*fraction)
+            stages.append(stage)
+            write_json(out / "evaluations.json", stages)
+    if args.save_model:
+        model.save_pretrained(out / "model")
+        tokenizer.save_pretrained(out / "model")
+    write_json(out / "completed.json", {"timings": timers, "online_seconds": online,
+               "wall_seconds_main":time.perf_counter()-wall_start,
+               "total_compute_seconds": online + sum(timers.values()),
+               "budget_overshoot_seconds": max(0, online-args.budget_seconds) if args.budget_seconds else 0,
+               "peak_online_allocated_gib": peak_online,
+               "peak_evaluation_allocated_gib": peak_evaluation,
+               "peak_cpu_rss_gib":resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/2**20,
+               "pilot": metadata["pilot"]})

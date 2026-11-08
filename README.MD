@@ -1,90 +1,127 @@
 # FIT: Continual LLM Unlearning
 
-Main experiments for FIT and baseline methods on the PCH benchmark.
-All methods start from existing checkpoints and process sequential unlearning
-requests. Checkpoint preparation and model weights are supplied separately.
+Main FIT and baseline experiments on the PCH benchmark. All methods consume
+existing initial checkpoints; checkpoint training and model weights are external.
 
-FIT combines request filtering, layer attribution, and importance-based routing
-between RLabel, NPO, and NPO+KL updates.
+## Layout
 
-## Code
+```text
+FIT.py                       FIT experiment entry point
+Baselines.py                 Fixed-baseline experiment entry point
+utils.py                     Shared model loading, data ordering, and JSON utilities
+Fit/                         FIT pipeline, filtering, and layer attribution
+Unlearning_algorithm/        Gradient primitives, ALKN, O³, and CURaTE
+Evaluations/                 Quality/response metrics and reference evaluation
+tests/                       Regression checks
+requirements.txt             Single dependency list
+```
 
-| Path | Purpose |
-| --- | --- |
-| `FIT.py`, `Fit/` | Original FIT entry point and method components |
-| `Baselines.py`, `Unlearning_algorithm/` | Original fixed-method baseline implementations |
-| `experiments/run_unlearning.py` | PCH comparison runner: FIT, NPO+KL, RLabel, ALKN, O³ |
-| `experiments/run_curate.py` | CURaTE baseline with a frozen LLM and trained retrieval embedder |
-| `experiments/metrics.py`, `Evaluations/` | Current and original evaluation functions |
-| `scripts/run_unlearning.sh` | Sequential main-method launcher |
+There is one implementation of each main component. Model-specific loading,
+including Qwen3.5's text backbone, is handled inside the shared loader.
 
-See [running instructions](experiments/README.md) and
-[baseline implementation notes](docs/BASELINES.md).
-The class name `FineTuning` in the original code denotes unlearning updates.
+## Setup
 
-## Environment
-
-Use Python 3.10 or later and install a CUDA-compatible PyTorch 2.6.0 build, then:
+Use Python 3.10 or later. Install a CUDA-compatible PyTorch 2.6.0 build, then:
 
 ```bash
 python -m pip install -r requirements.txt
-python -m unittest experiments.test_unlearning -v
+python -m unittest discover -s tests -v
 ```
 
-Run commands from the repository root. `scripts/python_qwen35.sh` uses `python`
-from the active environment; set `PYTHON` to choose another interpreter.
-Optional native Qwen kernels are listed as comments in `requirements.txt` because
-they require PyTorch and a compatible CUDA toolkit/compiler before building:
+Optional Qwen native kernels are listed as comments in `requirements.txt`.
+They require a compatible CUDA toolkit/compiler and must be installed after
+PyTorch with `--no-build-isolation`. The recorded convolution build used CUDA
+12.6 with PyTorch 2.6.0+cu124. Without these kernels, the loader uses a fallback;
+actual backends and package versions are saved with each run.
+
+## Run FIT
+
+Run commands from the repository root:
 
 ```bash
-python -m pip install --no-build-isolation \
-  fla-core==0.3.2 flash-linear-attention==0.3.2 causal-conv1d==1.5.3.post1
+CUDA_VISIBLE_DEVICES=0 python FIT.py \
+  --model /path/to/initial_checkpoint --output Experiment_record/FIT
 ```
 
-The recorded convolution build used CUDA 12.6 and PyTorch 2.6.0+cu124; build
-against your installed PyTorch ABI. Without these optional extensions, the runtime
-uses its fallback. Runtime metadata records the actual backend.
+FIT enables request filtering, layer attribution, and importance-based routing
+between RLabel, NPO, and NPO+KL. Full runs process 300 sequential requests and
+evaluate every 60 requests. No initial-model training is launched.
 
-## Main experiment
+## Run baselines
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/python_qwen35.sh -m experiments.run_unlearning \
-  --model /path/to/initial_checkpoint \
-  --method FIT --output Experiment_record/FIT
+CUDA_VISIBLE_DEVICES=0 python Baselines.py \
+  --model /path/to/initial_checkpoint --method NPO_KL \
+  --output Experiment_record/NPO_KL
 ```
 
-Choose `NPO_KL`, `RL`, `ALKN`, or `O3` for a fixed baseline. Before using O³:
+Methods: `GA`, `GA_GD`, `GA_KL`, `NPO`, `NPO_KL`, `RL`, `ALKN`, `O3`, `CURATE`.
+The gradient-ascent family preserves its original update functions; the other
+gradient primitives use the shared request optimizer. GA-family methods do not
+support online time budgets.
+
+CURaTE requires a separately trained author-recipe embedder:
 
 ```bash
-python scripts/fetch_o3_source.py
+CUDA_VISIBLE_DEVICES=0 python Baselines.py \
+  --model FITPCH/Llama-3-8B_PCH_finetune --method CURATE \
+  --embedder /path/to/trained_CURaTE_embedder --output Experiment_record/CURATE
 ```
 
-To run FIT and all four fixed baselines sequentially:
+It keeps LLM weights frozen and evaluates its actual retrieval/refusal path.
+For a response-level FIT comparison, pass
+`--behavioral_baseline Experiment_record/CURaTE/baseline_responses.json` to FIT.
+
+## Evaluation and outputs
+
+PCH text and QA are aligned, the first 300 records use a seed-42 permutation,
+and unrequested records form the retain set. Each run records a data hash and
+request ordering. The `pch-v2` evaluator uses answer-only ROUGE-L, 128 new greedy
+tokens, and `KL(reference || current)` for NPO+KL retention regularization.
+Raw probability, ROUGE-L, accuracy, quality, timing, memory, and update counts
+are saved separately. Output directories are never silently overwritten.
+
+To obtain FD/RU references from supplied checkpoints, without training:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_unlearning.sh \
-  /path/to/initial_checkpoint Experiment_record/comparison
+python -m Evaluations.reference \
+  --initial /path/to/initial --retain /path/to/retain_reference \
+  --output Experiment_record/reference.json
+python FIT.py --model /path/to/initial --output Experiment_record/FIT \
+  --reference_metrics Experiment_record/reference.json
 ```
 
-Full runs process 300 requests and evaluate every 60 requests. Outputs include
-raw quality metrics, method configurations, synchronized timing/memory traces,
-and completion markers. Existing output directories are never overwritten.
-For FD/RU, pass reference metrics evaluated from matching supplied checkpoints;
-see the [experiment guide](experiments/README.md).
+Quality is `100 * (Probability * ROUGE-L * Accuracy)^(1/3)`. FD/RU is
+`max(0, 1 - abs(current_quality / reference_quality - 1))`, with reference quality
+interpolated between initial and retain endpoints. This is an approximation,
+not a knowledge-deletion percentage; even an unchanged model can score highly.
+References must match the checkpoints, ordering, and evaluator version.
+Response-level leakage and refusal scores are lexical/operational proxies,
+not human safety annotations. Interpret timings with hardware and shared load.
 
-## Original entry points
+For a short validation run, add
+`--max_requests 2 --eval_every 2 --eval_limit 2` to the main entry points.
 
-The original entry points use the same `requirements.txt` environment and SDPA
-attention. Their original evaluation definitions are preserved.
+## Baseline provenance
 
-```bash
-python FIT.py --unlearning_model_name FITPCH/Llama-3-8B_PCH_finetune \
-  --retain_model_name FITPCH/Llama-3-8B_PCH_retain --device cuda:0
-python Baselines.py --unlearning_algorithm NPO_KL \
-  --unlearning_model_name FITPCH/Llama-3-8B_PCH_finetune \
-  --retain_model_name FITPCH/Llama-3-8B_PCH_retain --device cuda:0
-```
+**ALKN:** [paper](https://arxiv.org/abs/2611.02620). The PCH paper-based
+implementation includes task-vector negation. Its fixed retain minibatch,
+sampled global quantiles, and CPU-offloaded state are explicit adaptations
+that affect memory and runtime.
 
-Original and current evaluators use different protocols; do not combine their
-metrics. The older ALKN implementation is not equivalent to the PCH implementation
-in `experiments/alkn.py`; details are documented in the baseline notes.
+**O³:** [paper](https://arxiv.org/abs/2407.10223),
+[author code](https://github.com/GCYZSL/O3-LLM-UNLEARNING), revision
+`839afea7fc09001433ef30bd6670a6d6804a9045`. The implementation continues the latest
+LoRA adapter and applies only that adapter at inference; previous A snapshots
+contribute to orthogonality. On first use it fetches the pinned author detector
+into `.cache/` and verifies its SHA256. The ScienceQA gate mapping is retained;
+PCH paragraph windows, random-token targets, and hybrid-attention projections
+are task/architecture adaptations, not the author's original benchmark.
+
+**CURaTE:** [paper](https://aclanthology.org/2026.findings-acl.1102/),
+[author code](https://github.com/bsu1313/CURaTE), revision
+`5194055ab4dd2966931ebd3f1dc0d4775a7dd747`. Use the trained NQ-18K MPNet embedder
+recipe: one epoch, batch size 16, learning rate 2e-5, 100 warmup steps, cosine
+ContrastiveLoss margin 0.5. A raw pretrained embedder is not equivalent.
+The threshold is fixed at 0.9 and only current request paragraphs enter the
+forget database. Offline embedder preparation is external to the online runs.

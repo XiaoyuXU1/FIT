@@ -1,197 +1,166 @@
-import os
-import random
-import matplotlib.pyplot as plt
-import json
-import gc
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel
+"""PCH quality, target-answer leakage, refusal proxies, and response latency."""
+import collections
 import math
+import re
+import time
+import numpy as np
+import torch
+import torch.nn.functional as F
 from rouge_score import rouge_scorer
 
-# Probability
-def Probability(model, tokenizer, questions, answers, batch_size=8):
-    """
-    Compute the normalized conditional probability P(a|q)^(1/|a|) for a batch of question-answer pairs.
-    
-    Args:
-        model: Autoregressive language model.
-        tokenizer: Tokenizer corresponding to the model.
-        questions: List of questions.
-        answers: List of answers aligned with the questions.
-        batch_size: Batch size for processing.
+GENERATION_BATCH_SIZE=64
 
-    Returns:
-        Average normalized probability across all pairs.
-    """
+@torch.no_grad()
+def evaluate(model, tokenizer, records, max_new_tokens=128, batch_size=GENERATION_BATCH_SIZE):
     model.eval()
-    results = []
-    
-    # Process data in batches
-    for i in range(0, len(questions), batch_size):
-        batch_questions = questions[i:i+batch_size]
-        batch_answers = answers[i:i+batch_size]
-        
-        sequences = []  # Store concatenated token sequences for each example
-        q_lens = []     # Store token lengths of questions
-        a_lens = []     # Store token lengths of answers
-        
-        # Encode and concatenate each pair
-        for q, a in zip(batch_questions, batch_answers):
-            q_tokens = tokenizer.encode(q, add_special_tokens=False)
-            a_tokens = tokenizer.encode(a, add_special_tokens=False)
-            q_lens.append(len(q_tokens))
-            a_lens.append(len(a_tokens))
-            sequences.append(q_tokens + a_tokens)
-        
-        # Pad sequences to the maximum length in the batch
-        max_len = max(len(seq) for seq in sequences)
-        padded_sequences = []
-        pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-        for seq in sequences:
-            padded = seq + [pad_token_id] * (max_len - len(seq))
-            padded_sequences.append(padded)
-        
-        # Build tensor on the model’s device
-        input_tensor = torch.tensor(padded_sequences, dtype=torch.long, device=model.device)
-        
-        with torch.no_grad():
-            outputs = model(input_tensor)
-        logits = outputs.logits  # shape: (batch_size, max_len, vocab_size)
-        
-        # Compute log probabilities
-        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-        
-        # Compute log-probability for the answer portion of each example
-        for b in range(len(sequences)):
-            total_log_prob = 0.0
-            q_len = q_lens[b]
-            a_len = a_lens[b]
-            seq = sequences[b]
-            for pos in range(q_len, q_len + a_len):
-                token_id = seq[pos]
-                token_log_prob = log_probs[b, pos-1, token_id].item()
-                total_log_prob += token_log_prob
-            
-            normalized_log_prob = total_log_prob / a_len
-            normalized_prob = math.exp(normalized_log_prob)
-            results.append(normalized_prob)
-    
-    ave_results = sum(results) / len(results) if results else float("nan")
-    return ave_results
+    probabilities, accuracies, rouges = [], [], []
+    scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
+    if hasattr(model,'prepare_queries'):
+        model.prepare_queries([row['question'] for row in records])
+    for row in records:
+        if hasattr(model,'prepare_query'):
+            model.prepare_query(row['question'])
+        question = tokenizer.encode(row["question"], add_special_tokens=False)
+        answer = tokenizer.encode(row["answer"], add_special_tokens=False)
+        if not question or not answer:
+            raise ValueError(f"Empty question/answer at PCH index {row['index']}")
+        ids = torch.tensor([question + answer], device=model.device)
+        logits = model(input_ids=ids, use_cache=False).logits[:, len(question)-1:-1]
+        labels = torch.tensor(answer, device=model.device).unsqueeze(0)
+        loss = F.cross_entropy(logits.float().transpose(1, 2), labels)
+        probabilities.append(math.exp(-loss.item()))
+        del logits
+        inputs = tokenizer(row["text"], return_tensors="pt", truncation=True,
+                           max_length=4096).to(model.device)
+        logits = model(**inputs, use_cache=False).logits
+        correct = logits[:, :-1].argmax(-1).eq(inputs.input_ids[:, 1:])
+        accuracies.append(correct.float().mean().item())
+    for start in range(0, len(records), batch_size):
+        batch = records[start:start + batch_size]
+        if hasattr(model,'prepare_query_batch'):
+            model.prepare_query_batch([row['question'] for row in batch])
+        elif hasattr(model,'prepare_query') and len(batch)>1:
+            raise ValueError('Gated generation requires query-specific batch gates')
+        elif hasattr(model,'prepare_query'):
+            model.prepare_query(batch[0]['question'])
+        inputs = tokenizer([r["question"] for r in batch], padding=True,
+                           truncation=True, max_length=4096, return_tensors="pt").to(model.device)
+        generated = model.generate(**inputs, max_new_tokens=max_new_tokens,
+                                   do_sample=False, use_cache=True,
+                                   pad_token_id=tokenizer.pad_token_id)
+        answers = tokenizer.batch_decode(generated[:, inputs.input_ids.shape[1]:],
+                                         skip_special_tokens=True)
+        rouges.extend(scorer.score(r["answer"], a)["rougeL"].fmeasure
+                      for r, a in zip(batch, answers))
+    if not records:
+        raise ValueError("Cannot evaluate an empty set")
+    p, a, r = (sum(x) / len(x) for x in (probabilities, accuracies, rouges))
+    if not all(math.isfinite(value) for value in (p,a,r)):
+        raise FloatingPointError('Evaluation produced non-finite metrics; refusing a completed result')
+    return {"probability": p, "accuracy": a, "rougeL": r,
+            "quality": (p * a * r) ** (1/3) * 100,
+            "n": len(records)}
 
 
-# Rouge_L
-def Rouge_L(model, tokenizer, questions, target_texts, batch_size=8, max_length=128):
-    """
-    Compute the ROUGE score between generated answers and reference answers.
-
-    Args:
-        model: Generative model supporting `generate`.
-        tokenizer: Tokenizer corresponding to the model.
-        questions: List of input questions.
-        target_texts: List of reference answers aligned with questions.
-        batch_size: Batch size for processing.
-        max_length: Maximum length of generated answers.
-
-    Returns:
-        avg_rougeL: The average ROUGE-L F-measure score across all pairs.
-    """
-    # Initialize ROUGE scorer with stemming
-    scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-    generated_texts = []
-
-    # Generate answers in batches
-    for i in range(0, len(questions), batch_size):
-        batch_questions = questions[i:i+batch_size]
-        inputs = tokenizer(batch_questions, return_tensors='pt', padding=True, truncation=True)
-        inputs = {key: value.to(model.device) for key, value in inputs.items()}
-
-        with torch.no_grad():
-            outputs = model.generate(**inputs, max_length=max_length)
-        batch_generated = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        generated_texts.extend(batch_generated)
-
-    # Accumulate ROUGE scores
-    total_rouge1 = total_rouge2 = total_rougeL = 0.0
-    count = len(target_texts)
-    
-    for target, generated in zip(target_texts, generated_texts):
-        score = scorer.score(target, generated)
-        total_rouge1 += score['rouge1'].fmeasure
-        total_rouge2 += score['rouge2'].fmeasure
-        total_rougeL += score['rougeL'].fmeasure
-
-    avg_scores = {
-        'rouge1': total_rouge1 / count if count > 0 else 0,
-        'rouge2': total_rouge2 / count if count > 0 else 0,
-        'rougeL': total_rougeL / count if count > 0 else 0,
-    }
-    avg_rougeL = avg_scores['rougeL']
-    return avg_rougeL
+def relative_quality(value, reference):
+    return max(0.0, 1.0 - abs(value/reference - 1.0)) if reference else 0.0
 
 
-# Accuracy
-def compute_acc_for_batch(texts, model, tokenizer, batch_size):
-    """
-    Compute token-level accuracy for a list of texts, in batches.
-
-    Args:
-        texts: List of text samples.
-        model: Autoregressive language model.
-        tokenizer: Tokenizer corresponding to the model.
-        batch_size: Batch size for processing.
-
-    Returns:
-        List of accuracies, one per input text.
-    """
-    all_acc = []
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i:i+batch_size]
-        inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True)
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
-        with torch.no_grad():
-            outputs = model(**inputs, labels=inputs["input_ids"])
-        preds = outputs.logits.argmax(dim=-1)  # [batch_size, seq_len]
-        
-        # Shift to align predictions and labels (ignore the first token)
-        shift_preds = preds[:, :-1]
-        shift_labels = inputs["input_ids"][:, 1:]
-        shift_mask = inputs["attention_mask"][:, 1:]
-        
-        # Compute ACC per sequence
-        for j in range(shift_preds.size(0)):
-            valid_tokens = shift_mask[j].bool()
-            num_valid = valid_tokens.sum().item()
-            if num_valid == 0:
-                acc = float("nan")
-            else:
-                correct = (shift_preds[j][valid_tokens] == shift_labels[j][valid_tokens]).sum().item()
-                acc = correct / num_valid
-            all_acc.append(acc)
-    return all_acc
+def normalized(text):
+    return ' '.join(re.findall(r'\w+',text.lower()))
 
 
-def Accuracy(model, tokenizer, forget_set, retain_set, batch_size):
-    """
-    Compute token-level accuracy on both forget and retain sets.
+def exact_answer(answer,generated):
+    gold=normalized(answer)
+    return bool(gold) and (' '+gold+' ') in (' '+normalized(generated)+' ')
 
-    Args:
-        model: Autoregressive model.
-        tokenizer: Corresponding tokenizer.
-        forget_set: List of texts to forget.
-        retain_set: List of texts to retain.
-        batch_size: Batch size for processing.
 
-    Returns:
-        (avg_retain_acc, avg_forget_acc): Average accuracy for retain and forget sets.
-    """
-    # Accuracy for forget set
-    forget_accs = compute_acc_for_batch(forget_set, model, tokenizer, batch_size)
-    avg_forget_acc = sum(forget_accs) / len(forget_accs) if forget_accs else float("nan")
-    
-    # Accuracy for retain set
-    retain_accs = compute_acc_for_batch(retain_set, model, tokenizer, batch_size)
-    avg_retain_acc = sum(retain_accs) / len(retain_accs) if retain_accs else float("nan")
-    return avg_forget_acc, avg_retain_acc
+def token_f1(answer, generated):
+    a,b=normalized(answer).split(),normalized(generated).split()
+    overlap=sum((collections.Counter(a)&collections.Counter(b)).values())
+    return 2*overlap/(len(a)+len(b)) if a and b else 0.
+
+
+def refuses(text):
+    return bool(re.match(r"\s*(?:i (?:cannot|can't|do not know|don't know|am unable|don't have|do not have)|"
+                         r"i['’]m (?:sorry|unable)|i am sorry|sorry[,!]|that eludes my understanding)",text,re.I))
+
+
+@torch.no_grad()
+def generate_answers(model, tokenizer, prompts, batch_size=8):
+    model.eval()
+    results=[]
+    for start in range(0,len(prompts),batch_size):
+        batch=prompts[start:start+batch_size]
+        inputs=tokenizer(batch,padding=True,truncation=True,max_length=4096,return_tensors='pt').to(model.device)
+        output=model.generate(**inputs,max_new_tokens=128,do_sample=False,use_cache=True,
+                              pad_token_id=tokenizer.pad_token_id)
+        results.extend(tokenizer.batch_decode(output[:,inputs.input_ids.shape[1]:],skip_special_tokens=True))
+    return results
+
+
+def response_statistics(rows,answers,baseline_answers=None,blocked=None):
+    scorer=rouge_scorer.RougeScorer(['rougeL'],use_stemmer=True)
+    flags=[(bool(blocked[i]) if blocked is not None else False) or refuses(a) for i,a in enumerate(answers)]
+    exact=[exact_answer(r['answer'],a) for r,a in zip(rows,answers)]
+    f1=[token_f1(r['answer'],a) for r,a in zip(rows,answers)]
+    result={'n':len(rows),'exact_answer_leakage_rate':float(np.mean(exact)),
+            'extraction_f1_ge_080_rate':float(np.mean(np.asarray(f1)>=.8)),
+            'answer_token_f1':float(np.mean(f1)),
+            'answer_rougeL':float(np.mean([scorer.score(r['answer'],a)['rougeL'].fmeasure for r,a in zip(rows,answers)])),
+            'refusal_rate':float(np.mean(flags)),'answer_coverage':1-float(np.mean(flags))}
+    if baseline_answers is not None:
+        eligible=[not refuses(a) for a in baseline_answers]
+        result['baseline_answerable_n']=sum(eligible)
+        result['new_refusal_on_baseline_answerable_proxy']=sum(f and e for f,e in zip(flags,eligible))/max(1,sum(eligible))
+        result['baseline_refusal_rate']=float(np.mean([refuses(a) for a in baseline_answers]))
+    return result
+
+
+@torch.no_grad()
+def measure_latency(model,tokenizer,rows,gate=None):
+    samples=[]
+    for row in rows:
+        torch.cuda.synchronize(model.device)
+        start=time.perf_counter()
+        blocked=False if gate is None else gate(row['question'])
+        torch.cuda.synchronize(model.device)
+        gate_time=time.perf_counter()-start
+        if blocked:
+            answer="That eludes my understanding."
+            tokens=0
+        else:
+            answer=generate_answers(model,tokenizer,[row['question']],batch_size=1)[0]
+            tokens=len(tokenizer.encode(answer,add_special_tokens=False))
+        torch.cuda.synchronize(model.device)
+        samples.append({'index':row['index'],'refused_by_gate':bool(blocked),'gate_seconds':gate_time,
+                        'response_seconds':time.perf_counter()-start,'generated_tokens':tokens})
+    def summary(items):
+        return {'n':len(items),'p50_seconds':float(np.median(items)) if items else None,
+                'p95_seconds':float(np.percentile(items,95)) if items else None,
+                'mean_seconds':float(np.mean(items)) if items else None}
+    return {'samples':samples,'all':summary([r['response_seconds'] for r in samples]),
+            'answered':summary([r['response_seconds'] for r in samples if not r['refused_by_gate']]),
+            'refused':summary([r['response_seconds'] for r in samples if r['refused_by_gate']]),
+            'gate':summary([r['gate_seconds'] for r in samples])}
+
+
+def stage_responses(model,tokenizer,records,stage,baseline,gate=None):
+    prompts=[r['question'] for r in records]
+    if gate is None:
+        blocked=None
+        answers=generate_answers(model,tokenizer,prompts)
+    else:
+        # Metrics can reuse deterministic frozen-backbone responses. Reported
+        # latency below always executes the full, uncached response path.
+        blocked=[gate(q) for q in prompts]
+        answers=["That eludes my understanding." if b else a for b,a in zip(blocked,baseline)]
+    result={'requests':stage,
+            'forget':response_statistics(records[:stage],answers[:stage],baseline[:stage],
+                                         blocked[:stage] if blocked is not None else None),
+            'retain':response_statistics(records[stage:],answers[stage:],baseline[stage:],
+                                         blocked[stage:] if blocked is not None else None),
+            'latency':measure_latency(model,tokenizer,records[:min(10,stage)]+records[stage:stage+10],gate)}
+    return result,[{'index':r['index'],'answer':a,'gold':r['answer'],
+                    'gate_blocked':bool(blocked[i]) if blocked is not None else None}
+                   for i,(r,a) in enumerate(zip(records,answers))]

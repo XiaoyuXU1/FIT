@@ -4,8 +4,8 @@ import gc
 
 import torch
 
-from experiments.qwen35_common import load_model, load_tokenizer, manifest, pch_records, write_json
-from experiments.metrics import GENERATION_BATCH_SIZE, evaluate
+from utils import load_model, load_tokenizer, manifest, pch_records, write_json
+from Evaluations.evaluator import GENERATION_BATCH_SIZE, evaluate
 
 
 def main():

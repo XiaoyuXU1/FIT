@@ -30,6 +30,4 @@ results/
 main_finetune.py
 main_retrain.py
 train_retain_checkpoints.py
-experiments/prepare_qwen35.py
-experiments/train_curate.py
 *.ipynb
