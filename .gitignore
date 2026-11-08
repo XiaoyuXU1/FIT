@@ -1,0 +1,35 @@
+# Local environments, credentials, and machine settings
+.runtime/
+.cache/
+.venv/
+venv/
+.env
+.env.*
+.codex
+.agents/
+.aws/
+# Generated Python files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+# Local checkpoints and experiment outputs
+Model/
+models/
+checkpoints/
+Experiment_record/
+logs/
+outputs/
+results/
+*.log
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+# Not part of the unlearning code release
+main_finetune.py
+main_retrain.py
+train_retain_checkpoints.py
+experiments/prepare_qwen35.py
+experiments/train_curate.py
+*.ipynb

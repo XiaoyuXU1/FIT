@@ -22,6 +22,8 @@ from Unlearning_algorithm.NPO_KL import NPO_KL
 from Unlearning_algorithm.GA_GD import Gradient_ascent_descent
 from Unlearning_algorithm.GA_KL import Gradient_ascent_KL 
 from Unlearning_algorithm.NPO import NPO
+from Unlearning_algorithm.ALKN import ALKN
+from Unlearning_algorithm.PISCES import Pisces
 from collections import Counter
 import os
 from typing import List, Dict, Any, Optional, Callable, Union
@@ -81,7 +83,17 @@ def compute_importance(text, model, tokenizer):
     return importance_score
 
 class FineTuning:
-    def __init__(self, model, infer_model, tokenizer, selected_layers, lr=1e-6, device='cuda'):
+    def __init__(
+        self,
+        model,
+        infer_model,
+        tokenizer,
+        selected_layers,
+        lr=1e-6,
+        device='cuda',
+        importance_low_threshold=0.5,
+        importance_high_threshold=1.0,
+    ):
         """
         Args:
             model: Pretrained model
@@ -91,13 +103,17 @@ class FineTuning:
             device: Device ('cpu' or 'cuda')
         """
         self.selected_layers = selected_layers
-        self.device = device
-
+        self.device = model.device
         # Load pretrained model and tokenizer
         self.tokenizer = tokenizer
         self.model = model
         self.infer_model = infer_model
-        self.model.to(self.device)
+        self.importance_low_threshold = importance_low_threshold
+        self.importance_high_threshold = importance_high_threshold
+        if self.importance_low_threshold >= self.importance_high_threshold:
+            raise ValueError(
+                "importance_low_threshold must be lower than importance_high_threshold"
+            )
         
         # Freeze all parameters
         for param in self.model.parameters():
@@ -152,28 +168,137 @@ class FineTuning:
             num_training_steps=total_steps,
             eta_min=0.1
         )
-        score = compute_importance(forget_data, self.model, self.tokenizer)   #
+        score = compute_importance(forget_data, self.model, self.tokenizer)   #for qwen 0.5-1 scope, for other models 2-6 scope
         print(f"The importance of data: {score}")
-        if score >= 1:
+        if score >= self.importance_high_threshold:
             unlearning_algorithm = "NPO_KL"
-        elif score < 1 and score >= 0.5:  
+        elif score >= self.importance_low_threshold:
             unlearning_algorithm = "NPO"
         else:
             unlearning_algorithm = "RL"
-        print(unlearning_algorithm)
+        print(
+            f"{unlearning_algorithm} "
+            f"(IMP bins: <{self.importance_low_threshold}=RL, "
+            f"[{self.importance_low_threshold}, {self.importance_high_threshold})=NPO, "
+            f">={self.importance_high_threshold}=NPO_KL)"
+        )
 
         if unlearning_algorithm == "GA":
-            Gradient_ascent(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.device)
+            Gradient_ascent(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
         elif unlearning_algorithm == "GA_GD":
-            Gradient_ascent_descent(self.model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.device)
+            Gradient_ascent_descent(self.model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
         elif unlearning_algorithm == "GA_KL":
-            Gradient_ascent_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.device)
+            Gradient_ascent_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
         elif unlearning_algorithm == "NPO_KL":
-            NPO_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.device)
+            NPO_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
         elif unlearning_algorithm == "RL":
-            Random_label(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.device)
+            Random_label(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
         elif unlearning_algorithm == "NPO":
-            NPO(self.model, self.infer_model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.device)        
+            NPO(self.model, self.infer_model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
 
         print("[FineTuning] Fine-tuning complete.")
 
+    def random_run_finetuning(self, retain_set: list[str], forget_data: str, epochs: int = 20, chunk_size: int = 4096):
+        """
+        Fine-tune the model on the selected layers.
+
+        Args:
+            retain_set: Retain dataset (list of texts)
+            forget_data: Forget dataset (text to be unlearned)
+            epochs: Number of training epochs
+            chunk_size: Size of each training chunk
+        """
+        self.model.train()
+
+        optimizer = AdamW(self.model.parameters(), lr=self.lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1)
+
+        data_length = len(forget_data)
+        num_chunks = math.ceil(data_length / chunk_size)
+        total_steps = epochs * num_chunks
+        warmup_steps = int(0.1 * total_steps)
+
+        scheduler = CosineAnnealingWithWarmupLR(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps,
+            eta_min=0.1
+        )
+        unlearning_algorithms_list = ["GA", "GA_GD", "GA_KL", "NPO_KL", "RL", "NPO"]
+        unlearning_algorithm = random.choice(unlearning_algorithms_list)
+        if unlearning_algorithm == "GA":
+            Gradient_ascent(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm == "GA_GD":
+            Gradient_ascent_descent(self.model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm == "GA_KL":
+            Gradient_ascent_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm == "NPO_KL":
+            NPO_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm == "RL":
+            Random_label(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm == "NPO":
+            NPO(self.model, self.infer_model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
+
+        print("[FineTuning] Fine-tuning complete.")
+
+class Baselines_FineTuning:
+    def __init__(self, model, infer_model, tokenizer, lr=1e-6, device='cuda'):
+        """
+        Args:
+            model: Pretrained model
+            tokenizer: Tokenizer
+            selected_layers: List of layer indices to unfreeze
+            lr: Learning rate
+            device: Device ('cpu' or 'cuda')
+        """
+        self.device = model.device
+        # Load pretrained model and tokenizer
+        self.tokenizer = tokenizer
+        self.model = model
+        self.infer_model = infer_model
+        self.lr = lr
+
+    def run_baselines_finetuning(self, unlearning_algorithm, retain_set: list[str], forget_data: str, epochs: int = 20, chunk_size: int = 4096, prev_m_vector: Dict[str, torch.Tensor] = None, prev_mask_thr: Dict[str, float] = None):
+        """
+        Fine-tune the model on the selected layers.
+
+        Args:
+            retain_set: Retain dataset (list of texts)
+            forget_data: Forget dataset (text to be unlearned)
+            epochs: Number of training epochs
+            chunk_size: Size of each training chunk
+        """
+        self.model.train()
+
+        optimizer = AdamW(self.model.parameters(), lr=self.lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1)
+
+        data_length = len(forget_data)
+        num_chunks = math.ceil(data_length / chunk_size)
+        total_steps = epochs * num_chunks
+        warmup_steps = int(0.1 * total_steps)
+
+        scheduler = CosineAnnealingWithWarmupLR(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps,
+            eta_min=0.1
+        )
+
+        if unlearning_algorithm == "GA":
+            Gradient_ascent(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm == "GA_GD":
+            Gradient_ascent_descent(self.model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm == "GA_KL":
+            Gradient_ascent_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm == "NPO_KL":
+            NPO_KL(self.model, self.infer_model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm == "RL":
+            Random_label(self.model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm == "NPO":
+            NPO(self.model, self.infer_model, self.tokenizer, forget_data, optimizer, scheduler, epochs, chunk_size, self.model.device)
+        elif unlearning_algorithm=="ALKN":
+            m_vector, mask_thr = ALKN(self.model, self.tokenizer, forget_data, retain_set, optimizer, scheduler, epochs, chunk_size, self.device,prev_m_vector=prev_m_vector, prev_mask_thr=prev_mask_thr)
+            return m_vector, mask_thr
+        elif unlearning_algorithm=="Pisces":
+            Pisces(self.model, self.tokenizer, forget_data, 1, 1, self.device)
+
+        print("[FineTuning] Fine-tuning complete.")

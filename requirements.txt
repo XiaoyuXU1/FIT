@@ -21,3 +21,5 @@ natsort
 stanza==1.8.1
 lm_eval
 numpy==1.26.4
+sentence-transformers
+scikit-learn

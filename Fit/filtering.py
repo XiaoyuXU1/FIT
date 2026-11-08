@@ -5,14 +5,12 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 from typing import List, Dict, Any, Union
-from sentence_transformers import util
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel
 import hashlib
 import math
 from datasets import load_dataset
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import _LRScheduler
-import lm_eval
 import random
 import matplotlib.pyplot as plt
 import json

@@ -195,4 +195,4 @@ def Accuracy(model, tokenizer, forget_set, retain_set, batch_size):
     # Accuracy for retain set
     retain_accs = compute_acc_for_batch(retain_set, model, tokenizer, batch_size)
     avg_retain_acc = sum(retain_accs) / len(retain_accs) if retain_accs else float("nan")
-    return avg_retain_acc, avg_forget_acc
+    return avg_forget_acc, avg_retain_acc
